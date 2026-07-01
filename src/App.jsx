@@ -142,16 +142,11 @@ export default function App() {
   }
 
   async function sendeAnNotion(eintrag) {
+    const proxyUrl = "/api/notion";
     if (!notionToken || !notionDb || !notionDbProjekte) {
       showStatus("error", "Notion Token und beide Datenbank-IDs müssen in den Einstellungen eingetragen sein.");
       return false;
     }
-
-    const headers = {
-      Authorization: `Bearer ${notionToken}`,
-      "Content-Type": "application/json",
-      "Notion-Version": "2022-06-28",
-    };
 
     // Wochentag berechnen
     const wochentage = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
@@ -160,18 +155,21 @@ export default function App() {
 
     try {
       // --- DB 1: Arbeitstag ---
-      const res1 = await fetch("https://api.notion.com/v1/pages", {
+      const res1 = await fetch(proxyUrl, {
         method: "POST",
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          parent: { database_id: notionDb },
-          properties: {
-            Tag: { title: [{ text: { content: wochentag } }] },
-            Datum: { date: { start: eintrag.datum } },
-            Arbeitsbeginn: { rich_text: [{ text: { content: eintrag.arbeitsbeginn } }] },
-            Arbeitsende: { rich_text: [{ text: { content: eintrag.arbeitsende } }] },
-            PauseMinuten: { number: eintrag.pauseMinuten },
-            Gesamtarbeitszeit: { number: eintrag.gesamtArbeitszeit },
+          token: notionToken,
+          body: {
+            parent: { database_id: notionDb },
+            properties: {
+              Tag: { title: [{ text: { content: wochentag } }] },
+              Datum: { date: { start: eintrag.datum } },
+              Arbeitsbeginn: { rich_text: [{ text: { content: eintrag.arbeitsbeginn } }] },
+              Arbeitsende: { rich_text: [{ text: { content: eintrag.arbeitsende } }] },
+              PauseMinuten: { number: eintrag.pauseMinuten },
+              Gesamtarbeitszeit: { number: eintrag.gesamtArbeitszeit },
+            },
           },
         }),
       });
@@ -183,15 +181,18 @@ export default function App() {
 
       // --- DB 2: Projekte (ein Eintrag pro Projekt) ---
       for (const proj of eintrag.projekte) {
-        const res2 = await fetch("https://api.notion.com/v1/pages", {
+        const res2 = await fetch(proxyUrl, {
           method: "POST",
-          headers,
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            parent: { database_id: notionDbProjekte },
-            properties: {
-              Projekt: { title: [{ text: { content: proj.name } }] },
-              Datum: { date: { start: eintrag.datum } },
-              Stunden: { number: proj.stunden },
+            token: notionToken,
+            body: {
+              parent: { database_id: notionDbProjekte },
+              properties: {
+                Projekt: { title: [{ text: { content: proj.name } }] },
+                Datum: { date: { start: eintrag.datum } },
+                Stunden: { number: proj.stunden },
+              },
             },
           }),
         });
