@@ -2,9 +2,15 @@ import { useState, useEffect } from "react";
 
 const STORAGE_KEY = "zeiterfassung_eintraege";
 
+// Fest hinterlegte Notion-Zugangsdaten
 const NOTION_TOKEN = "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";
 const NOTION_DB_ARBEITSTAGE = "3906606acb1d802fbcd1c68844c94151";
 const NOTION_DB_PROJEKTE = "3906606acb1d80efa3cfc8b1312b4df2";
+
+function getMitarbeiterAusUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("mitarbeiter") || "";
+}
 
 function berechneArbeitszeit(start, end, pauseMin) {
   if (!start || !end) return null;
@@ -39,23 +45,26 @@ const initialForm = {
 export default function App() {
   const [form, setForm] = useState(initialForm);
   const [eintraege, setEintraege] = useState([]);
-  const [notionToken, setNotionToken] = useState("");
-  const [notionDb, setNotionDb] = useState("");
-  const [notionDbProjekte, setNotionDbProjekte] = useState("");
-  const [speicherMode, setSpeicherMode] = useState("lokal");
   const [status, setStatus] = useState(null);
-  const [settings, setSettings] = useState(false);
   const [loading, setLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [darkMode, setDarkMode] = useState(false);
+  const mitarbeiter = getMitarbeiterAusUrl();
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) setEintraege(JSON.parse(saved));
-    setNotionToken(localStorage.getItem("notion_token") || "");
-    setNotionDb(localStorage.getItem("notion_db") || "");
-    setNotionDbProjekte(localStorage.getItem("notion_db_projekte") || "");
-    setSpeicherMode(localStorage.getItem("speicher_mode") || "lokal");
+    setDarkMode(localStorage.getItem("dark_mode") === "true");
   }, []);
+
+  function toggleDarkMode() {
+    setDarkMode((d) => {
+      localStorage.setItem("dark_mode", (!d).toString());
+      return !d;
+    });
+  }
+
+  const s = getStyles(darkMode);
 
   const arbeitszeit = berechneArbeitszeit(form.arbeitsbeginn, form.arbeitsende, form.pauseMinuten);
 
@@ -81,21 +90,16 @@ export default function App() {
     }));
   }
 
-  function saveSettings() {
-    localStorage.setItem("notion_token", notionToken);
-    localStorage.setItem("notion_db", notionDb);
-    localStorage.setItem("notion_db_projekte", notionDbProjekte);
-    localStorage.setItem("speicher_mode", speicherMode);
-    setSettings(false);
-    showStatus("success", "Einstellungen gespeichert ✓");
-  }
-
   function showStatus(type, msg) {
     setStatus({ type, msg });
     setTimeout(() => setStatus(null), 3500);
   }
 
   async function handleSubmit() {
+    if (!mitarbeiter) {
+      showStatus("error", "Kein Mitarbeitername im Link gefunden. Bitte den korrekten Link verwenden.");
+      return;
+    }
     if (!form.datum || !form.arbeitsbeginn || !form.arbeitsende) {
       showStatus("error", "Bitte Datum, Arbeitsbeginn und Arbeitsende ausfüllen.");
       return;
@@ -132,40 +136,32 @@ export default function App() {
       })),
     };
 
-    if (speicherMode === "notion") {
-      const ok = await sendeAnNotion(eintrag);
-      if (!ok) { setLoading(false); return; }
-    }
+    const ok = await sendeAnNotion(eintrag);
+    if (!ok) { setLoading(false); return; }
 
     const neu = [eintrag, ...eintraege];
     setEintraege(neu);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(neu));
     setForm({ ...initialForm, datum: form.datum, projekte: [emptyProjekt()] });
-    showStatus("success", speicherMode === "notion" ? "An Notion gesendet ✓" : "Lokal gespeichert ✓");
+    showStatus("success", "An Notion gesendet ✓");
     setLoading(false);
   }
 
   async function sendeAnNotion(eintrag) {
     const proxyUrl = "/api/notion";
-    if (!notionToken || !notionDb || !notionDbProjekte) {
-      showStatus("error", "Notion Token und beide Datenbank-IDs müssen in den Einstellungen eingetragen sein.");
-      return false;
-    }
 
-    // Wochentag berechnen
     const wochentage = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
     const datumObj = new Date(eintrag.datum + "T12:00:00");
     const wochentag = wochentage[datumObj.getDay()];
 
     try {
-      // --- DB 1: Arbeitstag ---
       const res1 = await fetch(proxyUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          token: notionToken,
+          token: NOTION_TOKEN,
           body: {
-            parent: { database_id: notionDb },
+            parent: { database_id: NOTION_DB_ARBEITSTAGE },
             properties: {
               Tag: { title: [{ text: { content: wochentag } }] },
               Datum: { date: { start: eintrag.datum } },
@@ -173,6 +169,7 @@ export default function App() {
               Arbeitsende: { rich_text: [{ text: { content: eintrag.arbeitsende } }] },
               PauseMinuten: { number: eintrag.pauseMinuten },
               Gesamtarbeitszeit: { number: eintrag.gesamtArbeitszeit },
+              Mitarbeiter: { select: { name: mitarbeiter } },
             },
           },
         }),
@@ -183,19 +180,19 @@ export default function App() {
         return false;
       }
 
-      // --- DB 2: Projekte (ein Eintrag pro Projekt) ---
       for (const proj of eintrag.projekte) {
         const res2 = await fetch(proxyUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            token: notionToken,
+            token: NOTION_TOKEN,
             body: {
-              parent: { database_id: notionDbProjekte },
+              parent: { database_id: NOTION_DB_PROJEKTE },
               properties: {
                 Projekt: { title: [{ text: { content: proj.name } }] },
                 Datum: { date: { start: eintrag.datum } },
                 Stunden: { number: proj.stunden },
+                Mitarbeiter: { select: { name: mitarbeiter } },
               },
             },
           }),
@@ -228,56 +225,16 @@ export default function App() {
       {/* Header */}
       <div style={s.header}>
         <div>
-          <div style={s.headerLabel}>ZEITERFASSUNG</div>
-          <div style={s.headerSub}>Arbeitszeiten erfassen & verwalten</div>
+          <div style={s.headerLabel}>{mitarbeiter ? `Hallo ${mitarbeiter} 👋` : "ZEITERFASSUNG"}</div>
+          <div style={s.headerSub}>Arbeitszeiten erfassen</div>
         </div>
-        <button style={s.settingsBtn} onClick={() => setSettings(true)}>⚙️</button>
+        <button style={s.settingsBtn} onClick={toggleDarkMode}>{darkMode ? "☀️" : "🌙"}</button>
       </div>
 
       {/* Toast */}
       {status && (
-        <div style={{ ...s.toast, background: status.type === "error" ? "#ef4444" : "#10b981" }}>
+        <div style={{ ...s.toast, background: status.type === "error" ? "#ff3b30" : "#34c759" }}>
           {status.msg}
-        </div>
-      )}
-
-      {/* Settings Modal */}
-      {settings && (
-        <div style={s.overlay}>
-          <div style={s.modal}>
-            <div style={s.modalTitle}>Einstellungen</div>
-            <label style={s.label}>Speichermodus</label>
-            <div style={s.radioGroup}>
-              {["lokal", "notion"].map((m) => (
-                <button key={m}
-                  style={{ ...s.radioBtn, ...(speicherMode === m ? s.radioBtnOn : {}) }}
-                  onClick={() => setSpeicherMode(m)}>
-                  {m === "lokal" ? "💾 Lokal" : "📄 Notion API"}
-                </button>
-              ))}
-            </div>
-            {speicherMode === "notion" && (
-              <>
-                <label style={s.label}>Notion Integration Token</label>
-                <input style={s.input} placeholder="secret_xxxx..." value={notionToken}
-                  onChange={(e) => setNotionToken(e.target.value)} type="password" />
-                <label style={s.label}>Datenbank-ID – Arbeitstage</label>
-                <input style={s.input} placeholder="ID der Arbeitstage-Datenbank" value={notionDb}
-                  onChange={(e) => setNotionDb(e.target.value)} />
-                <label style={s.label}>Datenbank-ID – Projekte</label>
-                <input style={s.input} placeholder="ID der Projekte-Datenbank" value={notionDbProjekte}
-                  onChange={(e) => setNotionDbProjekte(e.target.value)} />
-                <div style={s.hint}>
-                  <b style={{color:"#6ee7b7"}}>DB Arbeitstage:</b> Tag (Titel), Datum, Arbeitsbeginn, Arbeitsende (Text), PauseMinuten, Gesamtarbeitszeit (Zahl).<br/><br/>
-                  <b style={{color:"#6ee7b7"}}>DB Projekte:</b> Projekt (Titel), Datum (Datum), Stunden (Zahl).
-                </div>
-              </>
-            )}
-            <div style={s.modalActions}>
-              <button style={s.cancelBtn} onClick={() => setSettings(false)}>Abbrechen</button>
-              <button style={s.saveBtn} onClick={saveSettings}>Speichern</button>
-            </div>
-          </div>
         </div>
       )}
 
@@ -286,10 +243,10 @@ export default function App() {
         <div style={s.overlay}>
           <div style={s.modal}>
             <div style={s.modalTitle}>Eintrag löschen?</div>
-            <div style={{ color: "#94a3b8", marginBottom: 24, fontSize: 14 }}>Dieser Eintrag wird unwiderruflich gelöscht.</div>
+            <div style={{ color: s.textSecondaryColor, marginBottom: 24, fontSize: 14 }}>Dieser Eintrag wird unwiderruflich gelöscht.</div>
             <div style={s.modalActions}>
               <button style={s.cancelBtn} onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
-              <button style={{ ...s.saveBtn, background: "#ef4444" }} onClick={() => loescheEintrag(deleteConfirm)}>Löschen</button>
+              <button style={{ ...s.saveBtn, background: "#ff3b30" }} onClick={() => loescheEintrag(deleteConfirm)}>Löschen</button>
             </div>
           </div>
         </div>
@@ -394,15 +351,15 @@ export default function App() {
 
         {/* Submit */}
         <button style={{ ...s.submitBtn, opacity: loading ? 0.7 : 1 }} onClick={handleSubmit} disabled={loading}>
-          {loading ? "Wird gespeichert…" : speicherMode === "notion" ? "📄 An Notion senden" : "💾 Lokal speichern"}
+          {loading ? "Wird gespeichert…" : "📄 An Notion senden"}
         </button>
       </div>
 
       {/* Summary */}
       {eintraege.length > 0 && (
         <div style={s.summaryBar}>
-          <span style={{ color: "#94a3b8", fontSize: 13 }}>{eintraege.length} Einträge</span>
-          <span style={{ color: "#34d399", fontWeight: 700, fontSize: 15 }}>{gesamtStunden.toFixed(2)} h gesamt</span>
+          <span style={{ color: s.textSecondaryColor, fontSize: 13 }}>{eintraege.length} Einträge</span>
+          <span style={{ color: "#007aff", fontWeight: 700, fontSize: 15 }}>{gesamtStunden.toFixed(2)} h gesamt</span>
         </div>
       )}
 
@@ -443,65 +400,102 @@ export default function App() {
       )}
 
       <div style={s.footer}>
-        Modus: {speicherMode === "notion" ? "📄 Notion API" : "💾 Lokaler Speicher"}
+        {mitarbeiter ? `Angemeldet als ${mitarbeiter}` : "Kein Mitarbeiter im Link angegeben"}
       </div>
     </div>
   );
 }
 
-const s = {
-  root: { fontFamily: "'Inter', -apple-system, sans-serif", background: "#0f172a", minHeight: "100vh", maxWidth: 480, margin: "0 auto", paddingBottom: 48, color: "#f1f5f9" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "28px 20px 16px", borderBottom: "1px solid #1e293b" },
-  headerLabel: { fontSize: 11, fontWeight: 700, letterSpacing: "0.15em", color: "#34d399", marginBottom: 2 },
-  headerSub: { fontSize: 16, fontWeight: 600, color: "#e2e8f0" },
-  settingsBtn: { background: "#1e293b", border: "none", borderRadius: 10, width: 40, height: 40, fontSize: 18, cursor: "pointer" },
-  toast: { margin: "12px 20px 0", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 500, color: "#fff" },
-  card: { margin: "20px 16px 0", background: "#1e293b", borderRadius: 16, padding: "20px 18px" },
-  cardTitle: { fontSize: 13, fontWeight: 700, letterSpacing: "0.1em", color: "#64748b", marginBottom: 16, textTransform: "uppercase" },
-  label: { display: "block", fontSize: 12, fontWeight: 600, color: "#94a3b8", marginBottom: 6, marginTop: 14, letterSpacing: "0.04em" },
-  input: { display: "block", width: "100%", background: "#0f172a", border: "1.5px solid #334155", borderRadius: 10, padding: "11px 13px", fontSize: 15, color: "#f1f5f9", outline: "none", boxSizing: "border-box", colorScheme: "dark" },
-  row: { display: "flex", marginTop: 0 },
-  resultBox: { marginTop: 20, background: "linear-gradient(135deg, #064e3b 0%, #0f172a 100%)", border: "1.5px solid #34d399", borderRadius: 14, padding: "18px 16px", textAlign: "center", minHeight: 80, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
-  resultLabel: { fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#34d399", marginBottom: 4 },
-  resultValue: { fontSize: 44, fontWeight: 800, color: "#fff", lineHeight: 1.1 },
-  resultUnit: { fontSize: 20, fontWeight: 500, color: "#34d399", marginLeft: 2 },
-  resultDezimal: { fontSize: 13, color: "#6ee7b7", marginTop: 4 },
-  resultPlaceholder: { color: "#334155", fontSize: 15, fontStyle: "italic" },
-  divider: { height: 1, background: "#334155", margin: "22px 0 18px" },
-  sectionLabel: { fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#475569", marginBottom: 12 },
-  colLabel: { fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 5, letterSpacing: "0.04em" },
-  projektRow: { display: "flex", alignItems: "flex-end", marginBottom: 10 },
-  removeBtn: { background: "transparent", border: "none", color: "#475569", fontSize: 15, cursor: "pointer", padding: "0 0 0 6px", marginBottom: 2, lineHeight: 1, flexShrink: 0 },
-  addBtn: { display: "flex", alignItems: "center", gap: 8, background: "#0f172a", border: "1.5px dashed #334155", borderRadius: 10, padding: "10px 14px", color: "#64748b", fontSize: 14, fontWeight: 600, cursor: "pointer", width: "100%", marginTop: 4 },
-  addBtnPlus: { fontSize: 18, color: "#34d399", lineHeight: 1 },
-  summeBox: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#0f172a", border: "1.5px solid #334155", borderRadius: 10, padding: "10px 14px", marginTop: 10 },
-  summeLabel: { fontSize: 12, fontWeight: 600, color: "#64748b", letterSpacing: "0.04em" },
-  summeWert: { fontSize: 15, fontWeight: 700, color: "#34d399" },
-  submitBtn: { marginTop: 20, width: "100%", background: "linear-gradient(135deg, #059669, #34d399)", border: "none", borderRadius: 12, padding: "15px", fontSize: 15, fontWeight: 700, color: "#fff", cursor: "pointer", letterSpacing: "0.02em" },
-  summaryBar: { display: "flex", justifyContent: "space-between", alignItems: "center", margin: "20px 16px 4px", padding: "10px 14px", background: "#1e293b", borderRadius: 10 },
-  listSection: { margin: "0 16px" },
-  listTitle: { fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", color: "#475569", textTransform: "uppercase", margin: "16px 0 10px" },
-  entryCard: { background: "#1e293b", borderRadius: 12, padding: "14px 16px", marginBottom: 10 },
-  entryHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
-  entryDate: { fontSize: 15, fontWeight: 600, color: "#e2e8f0" },
-  entryMeta: { fontSize: 12, color: "#64748b", marginTop: 3 },
-  entryHours: { fontSize: 16, fontWeight: 700, color: "#34d399" },
-  deleteBtn: { background: "transparent", border: "none", color: "#475569", fontSize: 15, cursor: "pointer", padding: "0 2px", lineHeight: 1 },
-  projektList: { marginTop: 10, borderTop: "1px solid #334155", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 },
-  projektItem: { display: "flex", alignItems: "center", gap: 6 },
-  projektDot: { color: "#34d399", fontSize: 14 },
-  projektName: { fontSize: 13, color: "#94a3b8", flex: 1 },
-  projektStunden: { fontSize: 13, fontWeight: 600, color: "#6ee7b7" },
-  empty: { textAlign: "center", color: "#334155", padding: "40px 20px", fontSize: 14 },
-  footer: { textAlign: "center", fontSize: 12, color: "#334155", padding: "24px 0 8px" },
-  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 },
-  modal: { background: "#1e293b", borderRadius: 18, padding: 24, width: "100%", maxWidth: 400 },
-  modalTitle: { fontSize: 17, fontWeight: 700, marginBottom: 20, color: "#f1f5f9" },
-  radioGroup: { display: "flex", gap: 10, marginBottom: 4 },
-  radioBtn: { flex: 1, padding: "10px", background: "#0f172a", border: "1.5px solid #334155", borderRadius: 10, color: "#94a3b8", fontSize: 14, fontWeight: 600, cursor: "pointer" },
-  radioBtnOn: { border: "1.5px solid #34d399", color: "#34d399", background: "#064e3b33" },
-  hint: { fontSize: 12, color: "#64748b", marginTop: 8, lineHeight: 1.6 },
-  modalActions: { display: "flex", gap: 10, marginTop: 24 },
-  cancelBtn: { flex: 1, padding: "12px", background: "#0f172a", border: "1.5px solid #334155", borderRadius: 10, color: "#94a3b8", fontSize: 14, fontWeight: 600, cursor: "pointer" },
-  saveBtn: { flex: 1, padding: "12px", background: "#059669", border: "none", borderRadius: 10, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" },
-};
+function getStyles(dark) {
+  const c = dark
+    ? {
+        bg: "#000000",
+        cardBg: "#1c1c1e",
+        cardBg2: "#2c2c2e",
+        text: "#ffffff",
+        textSecondary: "#98989d",
+        textTertiary: "#636366",
+        divider: "#38383a",
+        inputBg: "#2c2c2e",
+        resultBg: "linear-gradient(160deg, #0a1f3d 0%, #14213d 100%)",
+        resultBorder: "#1f3a63",
+        resultDezimal: "#6ea8e8",
+        shadow: "0 1px 3px rgba(0,0,0,0.3)",
+        overlayBg: "rgba(0,0,0,0.6)",
+        radioOnBg: "#0a2647",
+        empty: "#48484a",
+      }
+    : {
+        bg: "#f2f2f7",
+        cardBg: "#ffffff",
+        cardBg2: "#f2f2f7",
+        text: "#1c1c1e",
+        textSecondary: "#8e8e93",
+        textTertiary: "#c7c7cc",
+        divider: "#e5e5ea",
+        inputBg: "#f2f2f7",
+        resultBg: "linear-gradient(160deg, #eaf2ff 0%, #f5f8ff 100%)",
+        resultBorder: "#dce8fb",
+        resultDezimal: "#6e93c4",
+        shadow: "0 1px 3px rgba(0,0,0,0.04)",
+        overlayBg: "rgba(0,0,0,0.35)",
+        radioOnBg: "#eaf2ff",
+        empty: "#c7c7cc",
+      };
+
+  const accent = "#007aff";
+
+  return {
+    root: { fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif", background: c.bg, minHeight: "100vh", maxWidth: 480, margin: "0 auto", paddingBottom: 48, color: c.text, transition: "background 0.2s ease" },
+    header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "32px 20px 20px" },
+    headerLabel: { fontSize: 15, fontWeight: 700, letterSpacing: "0", color: c.text, marginBottom: 4 },
+    headerSub: { fontSize: 13, fontWeight: 500, color: c.textSecondary },
+    settingsBtn: { background: c.cardBg, border: "none", borderRadius: 12, width: 40, height: 40, fontSize: 17, cursor: "pointer", boxShadow: c.shadow },
+    toast: { margin: "0 20px 12px", borderRadius: 14, padding: "13px 16px", fontSize: 14, fontWeight: 500, color: "#fff", boxShadow: "0 4px 14px rgba(0,0,0,0.12)" },
+    card: { margin: "8px 16px 0", background: c.cardBg, borderRadius: 20, padding: "22px 18px", boxShadow: c.shadow },
+    cardTitle: { fontSize: 13, fontWeight: 600, letterSpacing: "0.01em", color: c.textSecondary, marginBottom: 18, textTransform: "uppercase" },
+    label: { display: "block", fontSize: 13, fontWeight: 500, color: c.textSecondary, marginBottom: 7, marginTop: 16 },
+    input: { display: "block", width: "100%", background: c.inputBg, border: "1px solid transparent", borderRadius: 12, padding: "12px 14px", fontSize: 16, color: c.text, outline: "none", boxSizing: "border-box", colorScheme: dark ? "dark" : "light", fontFamily: "inherit" },
+    row: { display: "flex", marginTop: 0 },
+    resultBox: { marginTop: 22, background: c.resultBg, border: `1px solid ${c.resultBorder}`, borderRadius: 18, padding: "20px 16px", textAlign: "center", minHeight: 84, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
+    resultLabel: { fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: accent, marginBottom: 6, textTransform: "uppercase" },
+    resultValue: { fontSize: 40, fontWeight: 700, color: c.text, lineHeight: 1.1, letterSpacing: "-0.02em" },
+    resultUnit: { fontSize: 18, fontWeight: 500, color: accent, marginLeft: 2 },
+    resultDezimal: { fontSize: 13, color: c.resultDezimal, marginTop: 5, fontWeight: 500 },
+    resultPlaceholder: { color: c.empty, fontSize: 15 },
+    divider: { height: 1, background: c.divider, margin: "24px 0 18px" },
+    sectionLabel: { fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: c.textSecondary, marginBottom: 12, textTransform: "uppercase" },
+    colLabel: { fontSize: 12, fontWeight: 500, color: c.textSecondary, marginBottom: 6 },
+    projektRow: { display: "flex", alignItems: "flex-end", marginBottom: 10 },
+    removeBtn: { background: "transparent", border: "none", color: c.textTertiary, fontSize: 16, cursor: "pointer", padding: "0 0 0 8px", marginBottom: 3, lineHeight: 1, flexShrink: 0 },
+    addBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: c.cardBg2, border: "none", borderRadius: 12, padding: "12px 14px", color: accent, fontSize: 15, fontWeight: 600, cursor: "pointer", width: "100%", marginTop: 6 },
+    addBtnPlus: { fontSize: 17, color: accent, lineHeight: 1 },
+    summeBox: { display: "flex", justifyContent: "space-between", alignItems: "center", background: c.cardBg2, borderRadius: 12, padding: "12px 14px", marginTop: 12 },
+    summeLabel: { fontSize: 13, fontWeight: 500, color: c.textSecondary },
+    summeWert: { fontSize: 16, fontWeight: 700, color: c.text },
+    submitBtn: { marginTop: 22, width: "100%", background: accent, border: "none", borderRadius: 14, padding: "16px", fontSize: 16, fontWeight: 600, color: "#fff", cursor: "pointer", boxShadow: "0 4px 12px rgba(0,122,255,0.25)" },
+    summaryBar: { display: "flex", justifyContent: "space-between", alignItems: "center", margin: "20px 16px 4px", padding: "14px 16px", background: c.cardBg, borderRadius: 16, boxShadow: c.shadow },
+    listSection: { margin: "0 16px" },
+    listTitle: { fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: c.textSecondary, textTransform: "uppercase", margin: "20px 4px 10px" },
+    entryCard: { background: c.cardBg, borderRadius: 16, padding: "16px 16px", marginBottom: 10, boxShadow: c.shadow },
+    entryHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
+    entryDate: { fontSize: 16, fontWeight: 600, color: c.text },
+    entryMeta: { fontSize: 13, color: c.textSecondary, marginTop: 3 },
+    entryHours: { fontSize: 16, fontWeight: 700, color: accent },
+    deleteBtn: { background: "transparent", border: "none", color: c.textTertiary, fontSize: 16, cursor: "pointer", padding: "0 2px", lineHeight: 1 },
+    projektList: { marginTop: 12, borderTop: `1px solid ${c.divider}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 },
+    projektItem: { display: "flex", alignItems: "center", gap: 8 },
+    projektDot: { color: accent, fontSize: 14 },
+    projektName: { fontSize: 14, color: dark ? "#d1d1d6" : "#3a3a3c", flex: 1 },
+    projektStunden: { fontSize: 14, fontWeight: 600, color: c.text },
+    empty: { textAlign: "center", color: c.empty, padding: "48px 24px", fontSize: 14 },
+    footer: { textAlign: "center", fontSize: 12, color: c.empty, padding: "28px 0 8px", fontWeight: 500 },
+    overlay: { position: "fixed", inset: 0, background: c.overlayBg, backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 },
+    modal: { background: c.cardBg, borderRadius: 22, padding: 26, width: "100%", maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" },
+    modalTitle: { fontSize: 18, fontWeight: 700, marginBottom: 20, color: c.text, letterSpacing: "-0.01em" },
+    modalActions: { display: "flex", gap: 10, marginTop: 26 },
+    cancelBtn: { flex: 1, padding: "13px", background: c.cardBg2, border: "none", borderRadius: 12, color: c.text, fontSize: 15, fontWeight: 600, cursor: "pointer" },
+    saveBtn: { flex: 1, padding: "13px", background: accent, border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 600, cursor: "pointer" },
+    textSecondaryColor: c.textSecondary,
+  };
+}
