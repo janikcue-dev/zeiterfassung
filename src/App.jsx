@@ -41,7 +41,7 @@ function formatDate(dateStr) {
   return `${d}.${m}.${y}`;
 }
 
-const emptyProjekt = () => ({ id: Date.now() + Math.random(), name: "", stunden: "" });
+const emptyProjekt = () => ({ id: Date.now() + Math.random(), name: "", stunden: "", notiz: "" });
 
 const initialForm = {
   tagesart: "normal", // normal | urlaub | feiertag | krank
@@ -218,11 +218,26 @@ export default function App() {
         gesamtArbeitszeitFormatiert: teilstunden > 0
           ? `${teilstunden}h gearbeitet + ${restKrankheit.toFixed(2)}h krank`
           : `Krank (${restKrankheit.toFixed(2)}h)`,
-        projekte: valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0 })),
+        projekte: valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" })),
       };
 
-      const ok = await sendeArbeitstagAnNotion(eintrag, "Krankheit", restKrankheit);
-      if (!ok) { beendeVorgang(); return; }
+      // Eintrag 1: tatsächlich gearbeitete Stunden als "Normal" (nur wenn > 0), ohne Zeiten
+      if (teilstunden > 0) {
+        const okNormal = await sendeArbeitstagAnNotion(
+          { ...eintrag, tagesart: "krank_arbeit" },
+          "Normal",
+          teilstunden
+        );
+        if (!okNormal) { beendeVorgang(); return; }
+      }
+
+      // Eintrag 2: die aufgefüllte Differenz als "Krankheit"
+      const okKrank = await sendeArbeitstagAnNotion(
+        { ...eintrag, tagesart: "krank" },
+        "Krankheit",
+        restKrankheit
+      );
+      if (!okKrank) { beendeVorgang(); return; }
 
       if (eintrag.projekte.length > 0) {
         const okProj = await sendeProjekteAnNotion(eintrag);
@@ -267,7 +282,7 @@ export default function App() {
       pauseMinuten: parseFloat(form.pauseMinuten || 0),
       gesamtArbeitszeit: parseFloat(arbeitszeit.dezimal),
       gesamtArbeitszeitFormatiert: `${arbeitszeit.h}h ${arbeitszeit.m}m`,
-      projekte: valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0 })),
+      projekte: valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" })),
     };
 
     const ok = await sendeArbeitstagAnNotion(eintrag, "Normal", eintrag.gesamtArbeitszeit);
@@ -344,6 +359,7 @@ export default function App() {
                 Datum: { date: { start: eintrag.datum } },
                 Stunden: { number: proj.stunden },
                 Mitarbeiter: { select: { name: mitarbeiter } },
+                ...(proj.notiz ? { Notiz: { rich_text: [{ text: { content: proj.notiz } }] } } : {}),
               },
             },
           }),
@@ -512,34 +528,43 @@ export default function App() {
             <div style={s.sectionLabel}>PROJEKTE</div>
 
             {form.projekte.map((proj, idx) => (
-              <div key={proj.id} style={s.projektRow}>
-                <div style={{ flex: 1 }}>
-                  {idx === 0 && <div style={s.colLabel}>Name / Projekt</div>}
-                  <input
-                    style={s.input}
-                    type="text"
-                    placeholder="Projektname"
-                    value={proj.name}
-                    onChange={(e) => handleProjektChange(proj.id, "name", e.target.value)}
-                  />
+              <div key={proj.id} style={s.projektBlock}>
+                <div style={s.projektRow}>
+                  <div style={{ flex: 1 }}>
+                    {idx === 0 && <div style={s.colLabel}>Name / Projekt</div>}
+                    <input
+                      style={s.input}
+                      type="text"
+                      placeholder="Projektname"
+                      value={proj.name}
+                      onChange={(e) => handleProjektChange(proj.id, "name", e.target.value)}
+                    />
+                  </div>
+                  <div style={{ width: 12 }} />
+                  <div style={{ width: 80 }}>
+                    {idx === 0 && <div style={s.colLabel}>Stunden</div>}
+                    <input
+                      style={{ ...s.input, textAlign: "center", paddingLeft: 8, paddingRight: 8 }}
+                      type="number"
+                      min="0"
+                      max="24"
+                      step="0.5"
+                      placeholder="0"
+                      value={proj.stunden}
+                      onChange={(e) => handleProjektChange(proj.id, "stunden", e.target.value)}
+                    />
+                  </div>
+                  {form.projekte.length > 1 && (
+                    <button style={s.removeBtn} onClick={() => removeProjekt(proj.id)}>✕</button>
+                  )}
                 </div>
-                <div style={{ width: 12 }} />
-                <div style={{ width: 80 }}>
-                  {idx === 0 && <div style={s.colLabel}>Stunden</div>}
-                  <input
-                    style={{ ...s.input, textAlign: "center", paddingLeft: 8, paddingRight: 8 }}
-                    type="number"
-                    min="0"
-                    max="24"
-                    step="0.5"
-                    placeholder="0"
-                    value={proj.stunden}
-                    onChange={(e) => handleProjektChange(proj.id, "stunden", e.target.value)}
-                  />
-                </div>
-                {form.projekte.length > 1 && (
-                  <button style={s.removeBtn} onClick={() => removeProjekt(proj.id)}>✕</button>
-                )}
+                <input
+                  style={{ ...s.input, marginTop: 8, fontSize: 14 }}
+                  type="text"
+                  placeholder="Anmerkung (optional) – z. B. was wurde gemacht"
+                  value={proj.notiz}
+                  onChange={(e) => handleProjektChange(proj.id, "notiz", e.target.value)}
+                />
               </div>
             ))}
 
@@ -640,7 +665,8 @@ function getStyles(dark) {
     divider: { height: 1, background: c.divider, margin: "24px 0 18px" },
     sectionLabel: { fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: c.textSecondary, marginBottom: 12, textTransform: "uppercase" },
     colLabel: { fontSize: 12, fontWeight: 500, color: c.textSecondary, marginBottom: 6 },
-    projektRow: { display: "flex", alignItems: "flex-end", marginBottom: 10 },
+    projektBlock: { marginBottom: 14 },
+    projektRow: { display: "flex", alignItems: "flex-end", marginBottom: 0 },
     removeBtn: { background: "transparent", border: "none", color: c.textTertiary, fontSize: 16, cursor: "pointer", padding: "0 0 0 8px", marginBottom: 3, lineHeight: 1, flexShrink: 0 },
     addBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: c.cardBg2, border: "none", borderRadius: 12, padding: "12px 14px", color: accent, fontSize: 15, fontWeight: 600, cursor: "pointer", width: "100%", marginTop: 6 },
     addBtnPlus: { fontSize: 17, color: accent, lineHeight: 1 },
