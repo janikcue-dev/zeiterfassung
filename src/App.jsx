@@ -2,6 +2,10 @@ import { useState, useEffect } from "react";
 
 const STORAGE_KEY = "zeiterfassung_eintraege";
 
+const NOTION_TOKEN = "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";
+const NOTION_DB_ARBEITSTAGE = "3906606acb1d802fbcd1c68844c94151";
+const NOTION_DB_PROJEKTE = "3906606acb1d80efa3cfc8b1312b4df2";
+
 function berechneArbeitszeit(start, end, pauseMin) {
   if (!start || !end) return null;
   const [sh, sm] = start.split(":").map(Number);
