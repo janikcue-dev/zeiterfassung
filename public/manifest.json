@@ -2,8 +2,6 @@
   "name": "Zeiterfassung",
   "short_name": "Zeiterfassung",
   "description": "Arbeitszeiten erfassen und an Notion senden",
-  "start_url": ".",
-  "scope": "/",
   "display": "standalone",
   "background_color": "#f2f2f7",
   "theme_color": "#007aff",
