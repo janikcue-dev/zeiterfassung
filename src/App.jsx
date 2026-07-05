@@ -16,9 +16,17 @@ function sollStunden(dateStr) {
   return 0; // Wochenende
 }
 
-function getMitarbeiterAusUrl() {
+// Mitarbeiter: aus URL lesen und merken — wichtig für PWA:
+// Wenn die App vom Homescreen ohne ?mitarbeiter= startet, wird der
+// zuletzt verwendete Name aus dem Speicher genommen.
+function getMitarbeiter() {
   const params = new URLSearchParams(window.location.search);
-  return params.get("mitarbeiter") || "";
+  const ausUrl = params.get("mitarbeiter");
+  if (ausUrl) {
+    localStorage.setItem("mitarbeiter_name", ausUrl);
+    return ausUrl;
+  }
+  return localStorage.getItem("mitarbeiter_name") || "";
 }
 
 function berechneArbeitszeit(start, end, pauseMin) {
@@ -41,6 +49,68 @@ function formatDate(dateStr) {
   return `${d}.${m}.${y}`;
 }
 
+// --- Lokaler Speicher (Quelle der Wahrheit für die Sync-Warteschlange) ---
+function ladeEintraege() {
+  try {
+    const roh = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    // Migration: alte Einträge ohne Sync-Felder gelten als gesendet
+    return roh.map((e) => ({
+      ...e,
+      syncStatus: e.syncStatus || "synced",
+      notionRequests: e.notionRequests || [],
+      lastError: e.lastError || null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function speichereEintraege(liste) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(liste));
+}
+
+// --- Notion-Request-Bausteine ---
+function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeiten) {
+  const wochentage = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
+  const datumObj = new Date(datum + "T12:00:00");
+  const wochentag = wochentage[datumObj.getDay()];
+
+  const properties = {
+    Tag: { title: [{ text: { content: wochentag } }] },
+    Datum: { date: { start: datum } },
+    Gesamtarbeitszeit: { number: gesamtStd },
+    Mitarbeiter: { select: { name: mitarbeiter } },
+    Status: { select: { name: statusLabel } },
+  };
+
+  if (zeiten) {
+    properties.Arbeitsbeginn = { rich_text: [{ text: { content: zeiten.arbeitsbeginn } }] };
+    properties.Arbeitsende = { rich_text: [{ text: { content: zeiten.arbeitsende } }] };
+    properties.PauseMinuten = { number: zeiten.pauseMinuten };
+  }
+
+  return {
+    token: NOTION_TOKEN,
+    body: { parent: { database_id: NOTION_DB_ARBEITSTAGE }, properties },
+  };
+}
+
+function baueProjektRequest(datum, proj, mitarbeiter) {
+  return {
+    token: NOTION_TOKEN,
+    body: {
+      parent: { database_id: NOTION_DB_PROJEKTE },
+      properties: {
+        Projekt: { title: [{ text: { content: proj.name } }] },
+        Datum: { date: { start: datum } },
+        Stunden: { number: proj.stunden },
+        Mitarbeiter: { select: { name: mitarbeiter } },
+        ...(proj.notiz ? { Notiz: { rich_text: [{ text: { content: proj.notiz } }] } } : {}),
+      },
+    },
+  };
+}
+
 const emptyProjekt = () => ({ id: Date.now() + Math.random(), name: "", stunden: "", notiz: "" });
 
 const initialForm = {
@@ -49,7 +119,7 @@ const initialForm = {
   arbeitsbeginn: "",
   arbeitsende: "",
   pauseMinuten: "0",
-  krankTeilstunden: "", // Stunden die trotz Krankheit gearbeitet wurden
+  krankTeilstunden: "",
   projekte: [emptyProjekt()],
 };
 
@@ -67,14 +137,42 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [darkMode, setDarkMode] = useState(false);
-  const [duplikatWarnung, setDuplikatWarnung] = useState(null); // { datum } wenn Duplikat erkannt
-  const mitarbeiter = getMitarbeiterAusUrl();
-  const submittingRef = useRef(false); // sofortige Sperre, unabhängig vom React-Re-Render
+  const [duplikatWarnung, setDuplikatWarnung] = useState(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [zeigeEintraege, setZeigeEintraege] = useState(false);
+  const [syncLaeuft, setSyncLaeuft] = useState(false);
+  const mitarbeiter = getMitarbeiter();
+  const submittingRef = useRef(false);
+  const syncingRef = useRef(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) setEintraege(JSON.parse(saved));
+    const geladen = ladeEintraege();
+    setEintraege(geladen);
+    speichereEintraege(geladen); // Migration persistieren
     setDarkMode(localStorage.getItem("dark_mode") === "true");
+
+    // PWA: Service Worker registrieren
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+
+    // Online/Offline überwachen + bei Rückkehr automatisch synchronisieren
+    const onOnline = () => {
+      setIsOnline(true);
+      syncPending();
+    };
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+
+    // Beim App-Start ausstehende Einträge senden
+    syncPending();
+
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function toggleDarkMode() {
@@ -88,6 +186,7 @@ export default function App() {
 
   const arbeitszeit = berechneArbeitszeit(form.arbeitsbeginn, form.arbeitsende, form.pauseMinuten);
   const soll = sollStunden(form.datum);
+  const pendingCount = eintraege.filter((e) => e.syncStatus === "pending").length;
 
   function handleChange(e) {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
@@ -117,7 +216,7 @@ export default function App() {
 
   function showStatus(type, msg) {
     setStatus({ type, msg });
-    setTimeout(() => setStatus(null), 3500);
+    setTimeout(() => setStatus(null), 4000);
   }
 
   function resetForm() {
@@ -129,8 +228,57 @@ export default function App() {
     submittingRef.current = false;
   }
 
+  // --- Sync: ausstehende Notion-Requests abarbeiten ---
+  async function syncPending() {
+    if (syncingRef.current) return;
+    if (!navigator.onLine) return;
+    syncingRef.current = true;
+    setSyncLaeuft(true);
+
+    const liste = ladeEintraege();
+    let netzwerkProblem = false;
+
+    for (const e of liste) {
+      if (e.syncStatus !== "pending") continue;
+      if (netzwerkProblem) break;
+
+      while (e.notionRequests.length > 0) {
+        const req = e.notionRequests[0];
+        try {
+          const res = await fetch("/api/notion", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(req),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            e.lastError = err.message || `Notion Fehler ${res.status}`;
+            break; // dieser Eintrag bleibt pending, nächster Eintrag
+          }
+          e.notionRequests.shift(); // erfolgreich → Request entfernen
+          e.lastError = null;
+          speichereEintraege(liste); // Fortschritt sofort sichern
+        } catch {
+          e.lastError = "Offline / Netzwerkfehler";
+          netzwerkProblem = true; // Netz weg → kompletten Sync abbrechen
+          break;
+        }
+      }
+
+      if (e.notionRequests.length === 0) {
+        e.syncStatus = "synced";
+        e.lastError = null;
+      }
+      speichereEintraege(liste);
+    }
+
+    setEintraege([...liste]);
+    setSyncLaeuft(false);
+    syncingRef.current = false;
+  }
+
   async function handleSubmit(ueberschreibenBestaetigt) {
-    if (submittingRef.current) return; // sofortige Sperre gegen Doppel-Klick
+    if (submittingRef.current) return;
     submittingRef.current = true;
 
     if (!mitarbeiter) {
@@ -144,7 +292,6 @@ export default function App() {
       return;
     }
 
-    // Schutz vor doppeltem Eintrag für denselben Tag (nur auf diesem Gerät erkennbar)
     if (!ueberschreibenBestaetigt) {
       const bereitsVorhanden = eintraege.some((e) => e.datum === form.datum);
       if (bereitsVorhanden) {
@@ -156,41 +303,41 @@ export default function App() {
 
     setLoading(true);
 
+    let eintrag = null;
+
     // --- URLAUB ---
     if (form.tagesart === "urlaub") {
-      const eintrag = {
+      eintrag = {
         id: Date.now(),
         tagesart: "urlaub",
         datum: form.datum,
         gesamtArbeitszeit: 0,
         gesamtArbeitszeitFormatiert: "Urlaub",
         projekte: [],
+        syncStatus: "pending",
+        lastError: null,
+        notionRequests: [baueArbeitstagRequest(form.datum, "Urlaub", 0, mitarbeiter, null)],
       };
-      const ok = await sendeArbeitstagAnNotion(eintrag, "Urlaub", 0);
-      if (!ok) { beendeVorgang(); return; }
-      speichereLokalUndReset(eintrag);
-      return;
     }
 
     // --- FEIERTAG ---
-    if (form.tagesart === "feiertag") {
+    else if (form.tagesart === "feiertag") {
       const stunden = sollStunden(form.datum);
-      const eintrag = {
+      eintrag = {
         id: Date.now(),
         tagesart: "feiertag",
         datum: form.datum,
         gesamtArbeitszeit: stunden,
         gesamtArbeitszeitFormatiert: `${stunden}h (Feiertag)`,
         projekte: [],
+        syncStatus: "pending",
+        lastError: null,
+        notionRequests: [baueArbeitstagRequest(form.datum, "Feiertag", stunden, mitarbeiter, null)],
       };
-      const ok = await sendeArbeitstagAnNotion(eintrag, "Feiertag", stunden);
-      if (!ok) { beendeVorgang(); return; }
-      speichereLokalUndReset(eintrag);
-      return;
     }
 
     // --- KRANK ---
-    if (form.tagesart === "krank") {
+    else if (form.tagesart === "krank") {
       const teilstunden = parseFloat(form.krankTeilstunden) || 0;
       const sollHeute = sollStunden(form.datum);
       const restKrankheit = Math.max(sollHeute - teilstunden, 0);
@@ -210,7 +357,17 @@ export default function App() {
         }
       }
 
-      const eintrag = {
+      const projekte = valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" }));
+      const requests = [];
+      if (teilstunden > 0) {
+        requests.push(baueArbeitstagRequest(form.datum, "Normal", teilstunden, mitarbeiter, null));
+      }
+      requests.push(baueArbeitstagRequest(form.datum, "Krankheit", restKrankheit, mitarbeiter, null));
+      for (const p of projekte) {
+        requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
+      }
+
+      eintrag = {
         id: Date.now(),
         tagesart: "krank",
         datum: form.datum,
@@ -218,173 +375,95 @@ export default function App() {
         gesamtArbeitszeitFormatiert: teilstunden > 0
           ? `${teilstunden}h gearbeitet + ${restKrankheit.toFixed(2)}h krank`
           : `Krank (${restKrankheit.toFixed(2)}h)`,
-        projekte: valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" })),
+        projekte,
+        syncStatus: "pending",
+        lastError: null,
+        notionRequests: requests,
       };
-
-      // Eintrag 1: tatsächlich gearbeitete Stunden als "Normal" (nur wenn > 0), ohne Zeiten
-      if (teilstunden > 0) {
-        const okNormal = await sendeArbeitstagAnNotion(
-          { ...eintrag, tagesart: "krank_arbeit" },
-          "Normal",
-          teilstunden
-        );
-        if (!okNormal) { beendeVorgang(); return; }
-      }
-
-      // Eintrag 2: die aufgefüllte Differenz als "Krankheit"
-      const okKrank = await sendeArbeitstagAnNotion(
-        { ...eintrag, tagesart: "krank" },
-        "Krankheit",
-        restKrankheit
-      );
-      if (!okKrank) { beendeVorgang(); return; }
-
-      if (eintrag.projekte.length > 0) {
-        const okProj = await sendeProjekteAnNotion(eintrag);
-        if (!okProj) { beendeVorgang(); return; }
-      }
-
-      speichereLokalUndReset(eintrag);
-      return;
     }
 
     // --- NORMAL ---
-    if (!form.arbeitsbeginn || !form.arbeitsende) {
-      showStatus("error", "Bitte Arbeitsbeginn und Arbeitsende ausfüllen.");
-      beendeVorgang();
-      return;
-    }
-    if (!arbeitszeit) {
-      showStatus("error", "Arbeitsende muss nach Arbeitsbeginn liegen.");
-      beendeVorgang();
-      return;
-    }
-    const valideProjekte = form.projekte.filter((p) => p.name.trim());
-    if (valideProjekte.length === 0) {
-      showStatus("error", "Bitte mindestens ein Projekt eintragen.");
-      beendeVorgang();
-      return;
-    }
-    const summeProjekte = valideProjekte.reduce((acc, p) => acc + (parseFloat(p.stunden) || 0), 0);
-    const nettoStunden = parseFloat(arbeitszeit.dezimal);
-    if (Math.abs(summeProjekte - nettoStunden) > 0.01) {
-      showStatus("error", `Projektstunden (${summeProjekte.toFixed(2)}h) stimmen nicht mit der Netto-Arbeitszeit (${nettoStunden.toFixed(2)}h) überein.`);
-      beendeVorgang();
-      return;
+    else {
+      if (!form.arbeitsbeginn || !form.arbeitsende) {
+        showStatus("error", "Bitte Arbeitsbeginn und Arbeitsende ausfüllen.");
+        beendeVorgang();
+        return;
+      }
+      if (!arbeitszeit) {
+        showStatus("error", "Arbeitsende muss nach Arbeitsbeginn liegen.");
+        beendeVorgang();
+        return;
+      }
+      const valideProjekte = form.projekte.filter((p) => p.name.trim());
+      if (valideProjekte.length === 0) {
+        showStatus("error", "Bitte mindestens ein Projekt eintragen.");
+        beendeVorgang();
+        return;
+      }
+      const summeProjekte = valideProjekte.reduce((acc, p) => acc + (parseFloat(p.stunden) || 0), 0);
+      const nettoStunden = parseFloat(arbeitszeit.dezimal);
+      if (Math.abs(summeProjekte - nettoStunden) > 0.01) {
+        showStatus("error", `Projektstunden (${summeProjekte.toFixed(2)}h) stimmen nicht mit der Netto-Arbeitszeit (${nettoStunden.toFixed(2)}h) überein.`);
+        beendeVorgang();
+        return;
+      }
+
+      const projekte = valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" }));
+      const requests = [
+        baueArbeitstagRequest(form.datum, "Normal", nettoStunden, mitarbeiter, {
+          arbeitsbeginn: form.arbeitsbeginn,
+          arbeitsende: form.arbeitsende,
+          pauseMinuten: parseFloat(form.pauseMinuten || 0),
+        }),
+      ];
+      for (const p of projekte) {
+        requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
+      }
+
+      eintrag = {
+        id: Date.now(),
+        tagesart: "normal",
+        datum: form.datum,
+        arbeitsbeginn: form.arbeitsbeginn,
+        arbeitsende: form.arbeitsende,
+        pauseMinuten: parseFloat(form.pauseMinuten || 0),
+        gesamtArbeitszeit: nettoStunden,
+        gesamtArbeitszeitFormatiert: `${arbeitszeit.h}h ${arbeitszeit.m}m`,
+        projekte,
+        syncStatus: "pending",
+        lastError: null,
+        notionRequests: requests,
+      };
     }
 
-    const eintrag = {
-      id: Date.now(),
-      tagesart: "normal",
-      datum: form.datum,
-      arbeitsbeginn: form.arbeitsbeginn,
-      arbeitsende: form.arbeitsende,
-      pauseMinuten: parseFloat(form.pauseMinuten || 0),
-      gesamtArbeitszeit: parseFloat(arbeitszeit.dezimal),
-      gesamtArbeitszeitFormatiert: `${arbeitszeit.h}h ${arbeitszeit.m}m`,
-      projekte: valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" })),
-    };
-
-    const ok = await sendeArbeitstagAnNotion(eintrag, "Normal", eintrag.gesamtArbeitszeit);
-    if (!ok) { beendeVorgang(); return; }
-    const okProj = await sendeProjekteAnNotion(eintrag);
-    if (!okProj) { beendeVorgang(); return; }
-
-    speichereLokalUndReset(eintrag);
-  }
-
-  function speichereLokalUndReset(eintrag) {
-    const neu = [eintrag, ...eintraege];
+    // Eintrag lokal sichern (als pending), Formular zurücksetzen
+    const neu = [eintrag, ...ladeEintraege()];
+    speichereEintraege(neu);
     setEintraege(neu);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(neu));
     resetForm();
-    showStatus("success", "An Notion gesendet ✓");
+
+    // Direkt versuchen zu senden
+    await syncPending();
+
+    // Ergebnis prüfen
+    const aktuell = ladeEintraege().find((e) => e.id === eintrag.id);
+    if (aktuell && aktuell.syncStatus === "synced") {
+      showStatus("success", "An Notion gesendet ✓");
+    } else if (!navigator.onLine) {
+      showStatus("warn", "📴 Offline gespeichert – wird automatisch gesendet, sobald du wieder online bist.");
+    } else {
+      showStatus("warn", `Zwischengespeichert – Senden wird erneut versucht. ${aktuell?.lastError ? "(" + aktuell.lastError + ")" : ""}`);
+    }
+
     beendeVorgang();
   }
 
-  async function sendeArbeitstagAnNotion(eintrag, statusLabel, gesamtStd) {
-    const proxyUrl = "/api/notion";
-    const wochentage = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
-    const datumObj = new Date(eintrag.datum + "T12:00:00");
-    const wochentag = wochentage[datumObj.getDay()];
-
-    const properties = {
-      Tag: { title: [{ text: { content: wochentag } }] },
-      Datum: { date: { start: eintrag.datum } },
-      Gesamtarbeitszeit: { number: gesamtStd },
-      Mitarbeiter: { select: { name: mitarbeiter } },
-      Status: { select: { name: statusLabel } },
-    };
-
-    if (eintrag.tagesart === "normal") {
-      properties.Arbeitsbeginn = { rich_text: [{ text: { content: eintrag.arbeitsbeginn } }] };
-      properties.Arbeitsende = { rich_text: [{ text: { content: eintrag.arbeitsende } }] };
-      properties.PauseMinuten = { number: eintrag.pauseMinuten };
-    }
-
-    try {
-      const res = await fetch(proxyUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token: NOTION_TOKEN,
-          body: { parent: { database_id: NOTION_DB_ARBEITSTAGE }, properties },
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        showStatus("error", `Notion Fehler (Arbeitstage): ${err.message || res.status}`);
-        return false;
-      }
-      return true;
-    } catch (e) {
-      showStatus("error", `Netzwerkfehler: ${e.message}`);
-      return false;
-    }
-  }
-
-  async function sendeProjekteAnNotion(eintrag) {
-    const proxyUrl = "/api/notion";
-    try {
-      for (const proj of eintrag.projekte) {
-        const res = await fetch(proxyUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            token: NOTION_TOKEN,
-            body: {
-              parent: { database_id: NOTION_DB_PROJEKTE },
-              properties: {
-                Projekt: { title: [{ text: { content: proj.name } }] },
-                Datum: { date: { start: eintrag.datum } },
-                Stunden: { number: proj.stunden },
-                Mitarbeiter: { select: { name: mitarbeiter } },
-                ...(proj.notiz ? { Notiz: { rich_text: [{ text: { content: proj.notiz } }] } } : {}),
-              },
-            },
-          }),
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          showStatus("error", `Notion Fehler (Projekte): ${err.message || res.status}`);
-          return false;
-        }
-      }
-      return true;
-    } catch (e) {
-      showStatus("error", `Netzwerkfehler: ${e.message}`);
-      return false;
-    }
-  }
-
   function loescheEintrag(id) {
-    const neu = eintraege.filter((e) => e.id !== id);
-    setEintraege(neu);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(neu));
+    const liste = ladeEintraege().filter((e) => e.id !== id);
+    speichereEintraege(liste);
+    setEintraege(liste);
     setDeleteConfirm(null);
   }
-
-  const gesamtStunden = eintraege.reduce((s, e) => s + e.gesamtArbeitszeit, 0);
 
   return (
     <div style={s.root}>
@@ -394,12 +473,25 @@ export default function App() {
           <div style={s.headerLabel}>{mitarbeiter ? `Hallo ${mitarbeiter} 👋` : "ZEITERFASSUNG"}</div>
           <div style={s.headerSub}>Arbeitszeiten erfassen</div>
         </div>
-        <button style={s.settingsBtn} onClick={toggleDarkMode}>{darkMode ? "☀️" : "🌙"}</button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button style={{ ...s.settingsBtn, position: "relative" }} onClick={() => setZeigeEintraege((z) => !z)}>
+            📋
+            {pendingCount > 0 && <span style={s.pendingBadge}>{pendingCount}</span>}
+          </button>
+          <button style={s.settingsBtn} onClick={toggleDarkMode}>{darkMode ? "☀️" : "🌙"}</button>
+        </div>
       </div>
+
+      {/* Offline-Banner */}
+      {!isOnline && (
+        <div style={s.offlineBanner}>
+          📴 Offline – Einträge werden zwischengespeichert und automatisch gesendet, sobald du wieder online bist.
+        </div>
+      )}
 
       {/* Toast */}
       {status && (
-        <div style={{ ...s.toast, background: status.type === "error" ? "#ff3b30" : "#34c759" }}>
+        <div style={{ ...s.toast, background: status.type === "error" ? "#ff3b30" : status.type === "warn" ? "#ff9500" : "#34c759" }}>
           {status.msg}
         </div>
       )}
@@ -408,11 +500,13 @@ export default function App() {
       {deleteConfirm && (
         <div style={s.overlay}>
           <div style={s.modal}>
-            <div style={s.modalTitle}>Eintrag löschen?</div>
-            <div style={{ color: s.textSecondaryColor, marginBottom: 24, fontSize: 14 }}>Dieser Eintrag wird unwiderruflich gelöscht.</div>
+            <div style={s.modalTitle}>Eintrag verwerfen?</div>
+            <div style={{ color: s.textSecondaryColor, marginBottom: 24, fontSize: 14 }}>
+              Dieser Eintrag wurde noch nicht an Notion gesendet und wird unwiderruflich verworfen.
+            </div>
             <div style={s.modalActions}>
               <button style={s.cancelBtn} onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
-              <button style={{ ...s.saveBtn, background: "#ff3b30" }} onClick={() => loescheEintrag(deleteConfirm)}>Löschen</button>
+              <button style={{ ...s.saveBtn, background: "#ff3b30" }} onClick={() => loescheEintrag(deleteConfirm)}>Verwerfen</button>
             </div>
           </div>
         </div>
@@ -435,6 +529,69 @@ export default function App() {
         </div>
       )}
 
+      {/* Einträge-Ansicht */}
+      {zeigeEintraege && (
+        <div style={s.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ ...s.cardTitle, marginBottom: 0 }}>Einträge auf diesem Gerät</div>
+            {pendingCount > 0 && isOnline && (
+              <button style={s.syncBtn} onClick={syncPending} disabled={syncLaeuft}>
+                {syncLaeuft ? "Sendet…" : "🔄 Jetzt senden"}
+              </button>
+            )}
+          </div>
+
+          {eintraege.length === 0 && (
+            <div style={{ ...s.empty, padding: "24px 12px" }}>Noch keine Einträge vorhanden.</div>
+          )}
+
+          {eintraege.map((e) => (
+            <div key={e.id} style={s.entryCard}>
+              <div style={s.entryHeader}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={s.entryDate}>
+                    {formatDate(e.datum)}
+                    {e.tagesart && e.tagesart !== "normal" && (
+                      <span style={s.tagBadge}>
+                        {TAGESARTEN.find((t) => t.key === e.tagesart)?.icon} {TAGESARTEN.find((t) => t.key === e.tagesart)?.label}
+                      </span>
+                    )}
+                    {e.syncStatus === "synced" ? (
+                      <span style={{ ...s.syncBadge, color: "#34c759", background: darkMode ? "#0d2b17" : "#e8f9ee" }}>✓ Gesendet</span>
+                    ) : (
+                      <span style={{ ...s.syncBadge, color: "#ff9500", background: darkMode ? "#2e1f04" : "#fff3e0" }}>⏳ Ausstehend</span>
+                    )}
+                  </div>
+                  {e.tagesart === "normal" && e.arbeitsbeginn && (
+                    <div style={s.entryMeta}>{e.arbeitsbeginn} – {e.arbeitsende} · {e.pauseMinuten} Min. Pause</div>
+                  )}
+                  {e.lastError && e.syncStatus === "pending" && (
+                    <div style={{ ...s.entryMeta, color: "#ff3b30" }}>⚠️ {e.lastError}</div>
+                  )}
+                  {e.projekte && e.projekte.length > 0 && (
+                    <div style={s.projektList}>
+                      {e.projekte.map((p, i) => (
+                        <div key={i} style={s.projektItem}>
+                          <span style={s.projektDot}>•</span>
+                          <span style={s.projektName}>{p.name}{p.notiz ? ` – ${p.notiz}` : ""}</span>
+                          {p.stunden > 0 && <span style={s.projektStunden}>{p.stunden}h</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                  <div style={s.entryHours}>{e.gesamtArbeitszeitFormatiert}</div>
+                  {e.syncStatus === "pending" && (
+                    <button style={s.deleteBtn} onClick={() => setDeleteConfirm(e.id)}>✕</button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Form Card */}
       <div style={s.card}>
         <div style={s.cardTitle}>Neuer Eintrag</div>
@@ -453,7 +610,7 @@ export default function App() {
           ))}
         </div>
 
-        {/* Datum (immer sichtbar) */}
+        {/* Datum */}
         <label style={{ ...s.label, textAlign: "center" }}>Datum *</label>
         <div style={{ display: "flex", justifyContent: "center" }}>
           <input style={{ ...s.input, width: "auto", minWidth: 160, maxWidth: 200, textAlign: "center" }} type="date" name="datum" value={form.datum} onChange={handleChange} />
@@ -486,7 +643,7 @@ export default function App() {
           </>
         )}
 
-        {/* NORMAL: Arbeitsbeginn + Arbeitsende + Pause */}
+        {/* NORMAL */}
         {form.tagesart === "normal" && (
           <>
             <div style={{ display: "flex", justifyContent: "space-around", marginTop: 0 }}>
@@ -521,7 +678,7 @@ export default function App() {
           </>
         )}
 
-        {/* Projekte: bei Normal immer, bei Krank nur wenn Teilstunden > 0 */}
+        {/* Projekte */}
         {(form.tagesart === "normal" || (form.tagesart === "krank" && parseFloat(form.krankTeilstunden) > 0)) && (
           <>
             <div style={s.divider} />
@@ -586,12 +743,13 @@ export default function App() {
 
         {/* Submit */}
         <button style={{ ...s.submitBtn, opacity: loading ? 0.7 : 1 }} onClick={() => handleSubmit(false)} disabled={loading}>
-          {loading ? "Wird gespeichert…" : "📄 An Notion senden"}
+          {loading ? "Wird gespeichert…" : isOnline ? "📄 An Notion senden" : "📴 Offline speichern"}
         </button>
       </div>
 
       <div style={s.footer}>
         {mitarbeiter ? `Angemeldet als ${mitarbeiter}` : "Kein Mitarbeiter im Link angegeben"}
+        {pendingCount > 0 && ` · ${pendingCount} Eintrag${pendingCount > 1 ? "e" : ""} ausstehend`}
       </div>
     </div>
   );
@@ -613,7 +771,6 @@ function getStyles(dark) {
         resultDezimal: "#6ea8e8",
         shadow: "0 1px 3px rgba(0,0,0,0.3)",
         overlayBg: "rgba(0,0,0,0.6)",
-        radioOnBg: "#0a2647",
         empty: "#48484a",
         infoBoxBg: "#1c2e1c",
         infoBoxBorder: "#2d4a2d",
@@ -632,7 +789,6 @@ function getStyles(dark) {
         resultDezimal: "#6e93c4",
         shadow: "0 1px 3px rgba(0,0,0,0.04)",
         overlayBg: "rgba(0,0,0,0.35)",
-        radioOnBg: "#eaf2ff",
         empty: "#c7c7cc",
         infoBoxBg: "#fff8e6",
         infoBoxBorder: "#ffe4a3",
@@ -646,12 +802,14 @@ function getStyles(dark) {
     headerLabel: { fontSize: 15, fontWeight: 700, letterSpacing: "0", color: c.text, marginBottom: 4 },
     headerSub: { fontSize: 13, fontWeight: 500, color: c.textSecondary },
     settingsBtn: { background: c.cardBg, border: "none", borderRadius: 12, width: 40, height: 40, fontSize: 17, cursor: "pointer", boxShadow: c.shadow },
+    pendingBadge: { position: "absolute", top: -5, right: -5, background: "#ff9500", color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: 10, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" },
+    offlineBanner: { margin: "0 20px 12px", borderRadius: 14, padding: "11px 14px", fontSize: 13, fontWeight: 500, color: "#fff", background: "#ff9500", lineHeight: 1.4 },
     toast: { margin: "0 20px 12px", borderRadius: 14, padding: "13px 16px", fontSize: 14, fontWeight: 500, color: "#fff", boxShadow: "0 4px 14px rgba(0,0,0,0.12)" },
-    card: { margin: "8px 16px 0", background: c.cardBg, borderRadius: 20, padding: "22px 18px", boxShadow: c.shadow },
+    card: { margin: "8px 16px 12px", background: c.cardBg, borderRadius: 20, padding: "22px 18px", boxShadow: c.shadow },
     cardTitle: { fontSize: 13, fontWeight: 600, letterSpacing: "0.01em", color: c.textSecondary, marginBottom: 18, textTransform: "uppercase" },
+    syncBtn: { background: accent, border: "none", borderRadius: 10, padding: "8px 12px", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" },
     label: { display: "block", fontSize: 13, fontWeight: 500, color: c.textSecondary, marginBottom: 7, marginTop: 16 },
     input: { display: "block", width: "100%", background: c.inputBg, border: "1px solid transparent", borderRadius: 12, padding: "12px 14px", fontSize: 16, color: c.text, outline: "none", boxSizing: "border-box", colorScheme: dark ? "dark" : "light", fontFamily: "inherit" },
-    row: { display: "flex", marginTop: 0 },
     tagesartGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 4 },
     tagesartBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "12px 4px", background: c.cardBg2, border: "1.5px solid transparent", borderRadius: 14, color: c.textSecondary, fontSize: 11, fontWeight: 600, cursor: "pointer" },
     tagesartBtnOn: { border: `1.5px solid ${accent}`, color: accent, background: dark ? "#0a2647" : "#eaf2ff" },
@@ -674,21 +832,19 @@ function getStyles(dark) {
     summeLabel: { fontSize: 13, fontWeight: 500, color: c.textSecondary },
     summeWert: { fontSize: 16, fontWeight: 700, color: c.text },
     submitBtn: { marginTop: 22, width: "100%", background: accent, border: "none", borderRadius: 14, padding: "16px", fontSize: 16, fontWeight: 600, color: "#fff", cursor: "pointer", boxShadow: "0 4px 12px rgba(0,122,255,0.25)" },
-    summaryBar: { display: "flex", justifyContent: "space-between", alignItems: "center", margin: "20px 16px 4px", padding: "14px 16px", background: c.cardBg, borderRadius: 16, boxShadow: c.shadow },
-    listSection: { margin: "0 16px" },
-    listTitle: { fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: c.textSecondary, textTransform: "uppercase", margin: "20px 4px 10px" },
-    entryCard: { background: c.cardBg, borderRadius: 16, padding: "16px 16px", marginBottom: 10, boxShadow: c.shadow },
+    entryCard: { background: c.cardBg2, borderRadius: 14, padding: "14px 14px", marginBottom: 10 },
     entryHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
-    entryDate: { fontSize: 16, fontWeight: 600, color: c.text, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    entryDate: { fontSize: 15, fontWeight: 600, color: c.text, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
     tagBadge: { fontSize: 11, fontWeight: 600, color: accent, background: dark ? "#0a2647" : "#eaf2ff", padding: "3px 8px", borderRadius: 8 },
+    syncBadge: { fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 8 },
     entryMeta: { fontSize: 13, color: c.textSecondary, marginTop: 3 },
-    entryHours: { fontSize: 14, fontWeight: 700, color: accent, textAlign: "right", maxWidth: 140 },
+    entryHours: { fontSize: 13, fontWeight: 700, color: accent, textAlign: "right", maxWidth: 130 },
     deleteBtn: { background: "transparent", border: "none", color: c.textTertiary, fontSize: 16, cursor: "pointer", padding: "0 2px", lineHeight: 1 },
-    projektList: { marginTop: 12, borderTop: `1px solid ${c.divider}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 },
+    projektList: { marginTop: 10, borderTop: `1px solid ${c.divider}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 5 },
     projektItem: { display: "flex", alignItems: "center", gap: 8 },
     projektDot: { color: accent, fontSize: 14 },
-    projektName: { fontSize: 14, color: dark ? "#d1d1d6" : "#3a3a3c", flex: 1 },
-    projektStunden: { fontSize: 14, fontWeight: 600, color: c.text },
+    projektName: { fontSize: 13, color: dark ? "#d1d1d6" : "#3a3a3c", flex: 1 },
+    projektStunden: { fontSize: 13, fontWeight: 600, color: c.text },
     empty: { textAlign: "center", color: c.empty, padding: "48px 24px", fontSize: 14 },
     footer: { textAlign: "center", fontSize: 12, color: c.empty, padding: "28px 0 8px", fontWeight: 500 },
     overlay: { position: "fixed", inset: 0, background: c.overlayBg, backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 },
