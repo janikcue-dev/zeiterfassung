@@ -58,6 +58,7 @@ function ladeEintraege() {
       ...e,
       syncStatus: e.syncStatus || "synced",
       notionRequests: e.notionRequests || [],
+      projektPageIds: e.projektPageIds || [],
       lastError: e.lastError || null,
     }));
   } catch {
@@ -70,7 +71,7 @@ function speichereEintraege(liste) {
 }
 
 // --- Notion-Request-Bausteine ---
-function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeiten) {
+function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeiten, mitRelation) {
   const wochentage = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
   const datumObj = new Date(datum + "T12:00:00");
   const wochentag = wochentage[datumObj.getDay()];
@@ -90,6 +91,8 @@ function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeite
   }
 
   return {
+    typ: "arbeitstag",
+    mitRelation: !!mitRelation, // bekommt beim Senden die Projekt-IDs als Relation
     token: NOTION_TOKEN,
     body: { parent: { database_id: NOTION_DB_ARBEITSTAGE }, properties },
   };
@@ -97,6 +100,7 @@ function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeite
 
 function baueProjektRequest(datum, proj, mitarbeiter) {
   return {
+    typ: "projekt",
     token: NOTION_TOKEN,
     body: {
       parent: { database_id: NOTION_DB_PROJEKTE },
@@ -244,17 +248,36 @@ export default function App() {
 
       while (e.notionRequests.length > 0) {
         const req = e.notionRequests[0];
+
+        // Beim Arbeitstag-Request die gesammelten Projekt-IDs als Relation "Projekte" einfügen
+        let sendeBody = req;
+        if (req.mitRelation && e.projektPageIds && e.projektPageIds.length > 0) {
+          sendeBody = JSON.parse(JSON.stringify(req));
+          sendeBody.body.properties.Projekte = {
+            relation: e.projektPageIds.map((pid) => ({ id: pid })),
+          };
+        }
+
         try {
           const res = await fetch("/api/notion", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(req),
+            body: JSON.stringify(sendeBody),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             e.lastError = err.message || `Notion Fehler ${res.status}`;
             break; // dieser Eintrag bleibt pending, nächster Eintrag
           }
+
+          // Bei Projekt-Requests: ID der neu erstellten Notion-Seite merken (für die Relation)
+          if (req.typ === "projekt") {
+            const daten = await res.json().catch(() => null);
+            if (daten && daten.id) {
+              e.projektPageIds = [...(e.projektPageIds || []), daten.id];
+            }
+          }
+
           e.notionRequests.shift(); // erfolgreich → Request entfernen
           e.lastError = null;
           speichereEintraege(liste); // Fortschritt sofort sichern
@@ -316,7 +339,8 @@ export default function App() {
         projekte: [],
         syncStatus: "pending",
         lastError: null,
-        notionRequests: [baueArbeitstagRequest(form.datum, "Urlaub", 0, mitarbeiter, null)],
+        notionRequests: [baueArbeitstagRequest(form.datum, "Urlaub", 0, mitarbeiter, null, false)],
+        projektPageIds: [],
       };
     }
 
@@ -332,7 +356,8 @@ export default function App() {
         projekte: [],
         syncStatus: "pending",
         lastError: null,
-        notionRequests: [baueArbeitstagRequest(form.datum, "Feiertag", stunden, mitarbeiter, null)],
+        notionRequests: [baueArbeitstagRequest(form.datum, "Feiertag", stunden, mitarbeiter, null, false)],
+        projektPageIds: [],
       };
     }
 
@@ -359,13 +384,15 @@ export default function App() {
 
       const projekte = valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" }));
       const requests = [];
-      if (teilstunden > 0) {
-        requests.push(baueArbeitstagRequest(form.datum, "Normal", teilstunden, mitarbeiter, null));
-      }
-      requests.push(baueArbeitstagRequest(form.datum, "Krankheit", restKrankheit, mitarbeiter, null));
+      // Projekte zuerst senden, damit ihre IDs für die Relation vorliegen
       for (const p of projekte) {
         requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
       }
+      if (teilstunden > 0) {
+        // Normal-Eintrag bekommt die Projekt-Relation (gearbeitete Stunden gehören zu den Projekten)
+        requests.push(baueArbeitstagRequest(form.datum, "Normal", teilstunden, mitarbeiter, null, true));
+      }
+      requests.push(baueArbeitstagRequest(form.datum, "Krankheit", restKrankheit, mitarbeiter, null, false));
 
       eintrag = {
         id: Date.now(),
@@ -379,6 +406,7 @@ export default function App() {
         syncStatus: "pending",
         lastError: null,
         notionRequests: requests,
+        projektPageIds: [],
       };
     }
 
@@ -409,16 +437,18 @@ export default function App() {
       }
 
       const projekte = valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" }));
-      const requests = [
+      const requests = [];
+      // Projekte zuerst senden, damit ihre IDs für die Relation vorliegen
+      for (const p of projekte) {
+        requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
+      }
+      requests.push(
         baueArbeitstagRequest(form.datum, "Normal", nettoStunden, mitarbeiter, {
           arbeitsbeginn: form.arbeitsbeginn,
           arbeitsende: form.arbeitsende,
           pauseMinuten: parseFloat(form.pauseMinuten || 0),
-        }),
-      ];
-      for (const p of projekte) {
-        requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
-      }
+        }, true)
+      );
 
       eintrag = {
         id: Date.now(),
@@ -433,6 +463,7 @@ export default function App() {
         syncStatus: "pending",
         lastError: null,
         notionRequests: requests,
+        projektPageIds: [],
       };
     }
 
