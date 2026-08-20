@@ -29,6 +29,19 @@ function getMitarbeiter() {
   return localStorage.getItem("mitarbeiter_name") || "";
 }
 
+// Azubi-Kennzeichen: aus URL lesen und merken (?azubi=1) — gleiches
+// Prinzip wie beim Mitarbeiternamen, damit es auch nach "Zum
+// Home-Bildschirm hinzufügen" erhalten bleibt.
+function getIstAzubi() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has("azubi")) {
+    const val = params.get("azubi") === "1";
+    localStorage.setItem("ist_azubi", val ? "1" : "0");
+    return val;
+  }
+  return localStorage.getItem("ist_azubi") === "1";
+}
+
 function berechneArbeitszeit(start, end, pauseMin) {
   if (!start || !end) return null;
   const [sh, sm] = start.split(":").map(Number);
@@ -47,6 +60,47 @@ function formatDate(dateStr) {
   if (!dateStr) return "";
   const [y, m, d] = dateStr.split("-");
   return `${d}.${m}.${y}`;
+}
+
+// --- Datums-Helfer (lokale Zeitzone, nicht UTC — wichtig für den Kalender) ---
+function toDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const t = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${t}`;
+}
+
+function heuteDatumStr() {
+  return toDateStr(new Date());
+}
+
+const MONATSNAMEN = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+const WOCHENTAGE_KURZ = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+
+// Baut die Tage-Liste für die Kalenderansicht eines Monats (Montag-Start).
+// null-Einträge sind Platzhalter vor dem 1. des Monats.
+function getMonatsTage(jahr, monat) {
+  const ersterTag = new Date(jahr, monat, 1);
+  const anzahlTage = new Date(jahr, monat + 1, 0).getDate();
+  let startOffset = ersterTag.getDay(); // 0=So
+  startOffset = startOffset === 0 ? 6 : startOffset - 1; // Mo=0 ... So=6
+  const tage = [];
+  for (let i = 0; i < startOffset; i++) tage.push(null);
+  for (let t = 1; t <= anzahlTage; t++) tage.push(new Date(jahr, monat, t));
+  return tage;
+}
+
+// Bestimmt die Einfärbung eines Kalendertags:
+// "entry"   = an diesem Tag existiert (auf diesem Gerät) bereits ein Eintrag → grün
+// "missing" = Tag liegt in der Vergangenheit, ist ein Werktag, kein Eintrag vorhanden → rot
+// "neutral" = Wochenende, heute oder Zukunft → neutral/weiß
+function tagStatus(dateStr, eintraege, heute) {
+  const hatEintrag = eintraege.some((e) => e.datum === dateStr);
+  if (hatEintrag) return "entry";
+  if (dateStr >= heute) return "neutral";
+  const dow = new Date(dateStr + "T12:00:00").getDay();
+  if (dow === 0 || dow === 6) return "neutral";
+  return "missing";
 }
 
 // --- Lokaler Speicher (Quelle der Wahrheit für die Sync-Warteschlange) ---
@@ -71,7 +125,7 @@ function speichereEintraege(liste) {
 }
 
 // --- Notion-Request-Bausteine ---
-function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeiten, mitRelation) {
+function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeiten, mitRelation, plusMinus) {
   const wochentage = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
   const datumObj = new Date(datum + "T12:00:00");
   const wochentag = wochentage[datumObj.getDay()];
@@ -82,6 +136,8 @@ function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeite
     Gesamtarbeitszeit: { number: gesamtStd },
     Mitarbeiter: { select: { name: mitarbeiter } },
     Status: { select: { name: statusLabel } },
+    Überstunden: { number: plusMinus ? plusMinus.ueber : 0 },
+    Minusstunden: { number: plusMinus ? plusMinus.minus : 0 },
   };
 
   if (zeiten) {
@@ -109,6 +165,7 @@ function baueProjektRequest(datum, proj, mitarbeiter) {
         Datum: { date: { start: datum } },
         Stunden: { number: proj.stunden },
         Mitarbeiter: { select: { name: mitarbeiter } },
+        Reihenfolge: { number: proj.reihenfolge || 1 },
         ...(proj.notiz ? { Notiz: { rich_text: [{ text: { content: proj.notiz } }] } } : {}),
       },
     },
@@ -118,8 +175,8 @@ function baueProjektRequest(datum, proj, mitarbeiter) {
 const emptyProjekt = () => ({ id: Date.now() + Math.random(), name: "", stunden: "", notiz: "" });
 
 const initialForm = {
-  tagesart: "normal", // normal | urlaub | feiertag | krank
-  datum: new Date().toISOString().split("T")[0],
+  tagesart: "normal", // normal | urlaub | feiertag | krank | schule
+  datum: heuteDatumStr(),
   arbeitsbeginn: "",
   arbeitsende: "",
   pauseMinuten: "0",
@@ -127,12 +184,61 @@ const initialForm = {
   projekte: [emptyProjekt()],
 };
 
-const TAGESARTEN = [
+const TAGESARTEN_BASIS = [
   { key: "normal", label: "Normal", icon: "💼" },
   { key: "urlaub", label: "Urlaub", icon: "🏖️" },
   { key: "feiertag", label: "Feiertag", icon: "🎉" },
   { key: "krank", label: "Krank", icon: "🤒" },
 ];
+const TAGESART_SCHULE = { key: "schule", label: "Schule", icon: "🎓" };
+
+// Wiederverwendbare Eintrags-Kachel — genutzt sowohl in der
+// "Einträge auf diesem Gerät"-Liste als auch in der Kalender-Tagesvorschau.
+function EintragKarte({ e, s, dark, TAGESARTEN, formatDate, zeigeDelete, onDelete }) {
+  const art = TAGESARTEN.find((t) => t.key === e.tagesart);
+  return (
+    <div style={s.entryCard}>
+      <div style={s.entryHeader}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={s.entryDate}>
+            {formatDate(e.datum)}
+            {e.tagesart && e.tagesart !== "normal" && art && (
+              <span style={s.tagBadge}>{art.icon} {art.label}</span>
+            )}
+            {e.syncStatus === "synced" ? (
+              <span style={{ ...s.syncBadge, color: "#34c759", background: dark ? "#0d2b17" : "#e8f9ee" }}>✓ Gesendet</span>
+            ) : (
+              <span style={{ ...s.syncBadge, color: "#ff9500", background: dark ? "#2e1f04" : "#fff3e0" }}>⏳ Ausstehend</span>
+            )}
+          </div>
+          {e.tagesart === "normal" && e.arbeitsbeginn && (
+            <div style={s.entryMeta}>{e.arbeitsbeginn} – {e.arbeitsende} · {e.pauseMinuten} Min. Pause</div>
+          )}
+          {e.lastError && e.syncStatus === "pending" && (
+            <div style={{ ...s.entryMeta, color: "#ff3b30" }}>⚠️ {e.lastError}</div>
+          )}
+          {e.projekte && e.projekte.length > 0 && (
+            <div style={s.projektList}>
+              {e.projekte.map((p, i) => (
+                <div key={i} style={s.projektItem}>
+                  <span style={s.projektNr}>{p.reihenfolge || i + 1}</span>
+                  <span style={s.projektName}>{p.name}{p.notiz ? ` – ${p.notiz}` : ""}</span>
+                  {p.stunden > 0 && <span style={s.projektStunden}>{p.stunden}h</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <div style={s.entryHours}>{e.gesamtArbeitszeitFormatiert}</div>
+          {zeigeDelete && e.syncStatus === "pending" && (
+            <button style={s.deleteBtn} onClick={() => onDelete(e.id)}>✕</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [form, setForm] = useState(initialForm);
@@ -145,9 +251,17 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [zeigeEintraege, setZeigeEintraege] = useState(false);
   const [syncLaeuft, setSyncLaeuft] = useState(false);
+  const [kalenderDatum, setKalenderDatum] = useState(() => {
+    const d = new Date();
+    return { jahr: d.getFullYear(), monat: d.getMonth() };
+  });
+  const [vorschauTag, setVorschauTag] = useState(null); // { datum, eintraege }
   const mitarbeiter = getMitarbeiter();
+  const istAzubi = getIstAzubi();
+  const TAGESARTEN = istAzubi ? [...TAGESARTEN_BASIS, TAGESART_SCHULE] : TAGESARTEN_BASIS;
   const submittingRef = useRef(false);
   const syncingRef = useRef(false);
+  const touchStartX = useRef(null);
 
   useEffect(() => {
     const geladen = ladeEintraege();
@@ -191,6 +305,7 @@ export default function App() {
   const arbeitszeit = berechneArbeitszeit(form.arbeitsbeginn, form.arbeitsende, form.pauseMinuten);
   const soll = sollStunden(form.datum);
   const pendingCount = eintraege.filter((e) => e.syncStatus === "pending").length;
+  const heute = heuteDatumStr();
 
   function handleChange(e) {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
@@ -230,6 +345,50 @@ export default function App() {
   function beendeVorgang() {
     setLoading(false);
     submittingRef.current = false;
+  }
+
+  // --- Kalender: Monatsnavigation + Tages-Auswahl ---
+  function vorherigerMonat() {
+    setKalenderDatum((k) => {
+      let monat = k.monat - 1, jahr = k.jahr;
+      if (monat < 0) { monat = 11; jahr -= 1; }
+      return { jahr, monat };
+    });
+  }
+
+  function naechsterMonat() {
+    setKalenderDatum((k) => {
+      let monat = k.monat + 1, jahr = k.jahr;
+      if (monat > 11) { monat = 0; jahr += 1; }
+      return { jahr, monat };
+    });
+  }
+
+  function heuteAnzeigen() {
+    const d = new Date();
+    setKalenderDatum({ jahr: d.getFullYear(), monat: d.getMonth() });
+  }
+
+  function onTouchStart(e) {
+    touchStartX.current = e.touches[0].clientX;
+  }
+
+  function onTouchEnd(e) {
+    if (touchStartX.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    if (Math.abs(dx) > 45) {
+      if (dx < 0) naechsterMonat();
+      else vorherigerMonat();
+    }
+    touchStartX.current = null;
+  }
+
+  function onTagKlick(dateStr) {
+    setForm((f) => ({ ...f, datum: dateStr }));
+    const amTag = eintraege.filter((e) => e.datum === dateStr);
+    if (amTag.length > 0) {
+      setVorschauTag({ datum: dateStr, eintraege: amTag });
+    }
   }
 
   // --- Sync: ausstehende Notion-Requests abarbeiten ---
@@ -344,6 +503,22 @@ export default function App() {
       };
     }
 
+    // --- SCHULE (nur wenn per Link freigeschaltet) ---
+    else if (form.tagesart === "schule") {
+      eintrag = {
+        id: Date.now(),
+        tagesart: "schule",
+        datum: form.datum,
+        gesamtArbeitszeit: 0,
+        gesamtArbeitszeitFormatiert: "Schultag",
+        projekte: [],
+        syncStatus: "pending",
+        lastError: null,
+        notionRequests: [baueArbeitstagRequest(form.datum, "Schultag", 0, mitarbeiter, null, false)],
+        projektPageIds: [],
+      };
+    }
+
     // --- FEIERTAG ---
     else if (form.tagesart === "feiertag") {
       const stunden = sollStunden(form.datum);
@@ -382,15 +557,18 @@ export default function App() {
         }
       }
 
-      const projekte = valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" }));
+      const projekte = valideProjekte.map((p, idx) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "", reihenfolge: idx + 1 }));
       const requests = [];
       // Projekte zuerst senden, damit ihre IDs für die Relation vorliegen
       for (const p of projekte) {
         requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
       }
       if (teilstunden > 0) {
-        // Normal-Eintrag bekommt die Projekt-Relation (gearbeitete Stunden gehören zu den Projekten)
-        requests.push(baueArbeitstagRequest(form.datum, "Normal", teilstunden, mitarbeiter, null, true));
+        // Normal-Eintrag bekommt die Projekt-Relation (gearbeitete Stunden gehören zu den Projekten).
+        // Keine Minusstunden – die Krankheit füllt den Tag auf. Überstunden nur, falls
+        // trotz Krankheit mehr als die Soll-Zeit gearbeitet wurde.
+        const ueberKrank = Math.max(Math.round((teilstunden - sollHeute) * 100) / 100, 0);
+        requests.push(baueArbeitstagRequest(form.datum, "Normal", teilstunden, mitarbeiter, null, true, { ueber: ueberKrank, minus: 0 }));
       }
       requests.push(baueArbeitstagRequest(form.datum, "Krankheit", restKrankheit, mitarbeiter, null, false));
 
@@ -436,18 +614,24 @@ export default function App() {
         return;
       }
 
-      const projekte = valideProjekte.map((p) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "" }));
+      const projekte = valideProjekte.map((p, idx) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "", reihenfolge: idx + 1 }));
+
       const requests = [];
       // Projekte zuerst senden, damit ihre IDs für die Relation vorliegen
       for (const p of projekte) {
         requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
       }
+      // Über-/Minusstunden gegenüber der Soll-Arbeitszeit berechnen
+      // (Mo-Do 8,5h · Fr 6h · Sa/So 0h → am Wochenende ist alles Überstunden)
+      const diff = Math.round((nettoStunden - sollStunden(form.datum)) * 100) / 100;
+      const plusMinus = { ueber: Math.max(diff, 0), minus: Math.min(diff, 0) };
+
       requests.push(
         baueArbeitstagRequest(form.datum, "Normal", nettoStunden, mitarbeiter, {
           arbeitsbeginn: form.arbeitsbeginn,
           arbeitsende: form.arbeitsende,
           pauseMinuten: parseFloat(form.pauseMinuten || 0),
-        }, true)
+        }, true, plusMinus)
       );
 
       eintrag = {
@@ -560,6 +744,19 @@ export default function App() {
         </div>
       )}
 
+      {/* Kalender-Tagesvorschau */}
+      {vorschauTag && (
+        <div style={s.overlay}>
+          <div style={s.modal}>
+            <div style={s.modalTitle}>{formatDate(vorschauTag.datum)}</div>
+            {vorschauTag.eintraege.map((e) => (
+              <EintragKarte key={e.id} e={e} s={s} dark={darkMode} TAGESARTEN={TAGESARTEN} formatDate={formatDate} />
+            ))}
+            <button style={{ ...s.cancelBtn, marginTop: 4 }} onClick={() => setVorschauTag(null)}>Schließen</button>
+          </div>
+        </div>
+      )}
+
       {/* Einträge-Ansicht */}
       {zeigeEintraege && (
         <div style={s.card}>
@@ -577,48 +774,7 @@ export default function App() {
           )}
 
           {eintraege.map((e) => (
-            <div key={e.id} style={s.entryCard}>
-              <div style={s.entryHeader}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={s.entryDate}>
-                    {formatDate(e.datum)}
-                    {e.tagesart && e.tagesart !== "normal" && (
-                      <span style={s.tagBadge}>
-                        {TAGESARTEN.find((t) => t.key === e.tagesart)?.icon} {TAGESARTEN.find((t) => t.key === e.tagesart)?.label}
-                      </span>
-                    )}
-                    {e.syncStatus === "synced" ? (
-                      <span style={{ ...s.syncBadge, color: "#34c759", background: darkMode ? "#0d2b17" : "#e8f9ee" }}>✓ Gesendet</span>
-                    ) : (
-                      <span style={{ ...s.syncBadge, color: "#ff9500", background: darkMode ? "#2e1f04" : "#fff3e0" }}>⏳ Ausstehend</span>
-                    )}
-                  </div>
-                  {e.tagesart === "normal" && e.arbeitsbeginn && (
-                    <div style={s.entryMeta}>{e.arbeitsbeginn} – {e.arbeitsende} · {e.pauseMinuten} Min. Pause</div>
-                  )}
-                  {e.lastError && e.syncStatus === "pending" && (
-                    <div style={{ ...s.entryMeta, color: "#ff3b30" }}>⚠️ {e.lastError}</div>
-                  )}
-                  {e.projekte && e.projekte.length > 0 && (
-                    <div style={s.projektList}>
-                      {e.projekte.map((p, i) => (
-                        <div key={i} style={s.projektItem}>
-                          <span style={s.projektDot}>•</span>
-                          <span style={s.projektName}>{p.name}{p.notiz ? ` – ${p.notiz}` : ""}</span>
-                          {p.stunden > 0 && <span style={s.projektStunden}>{p.stunden}h</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                  <div style={s.entryHours}>{e.gesamtArbeitszeitFormatiert}</div>
-                  {e.syncStatus === "pending" && (
-                    <button style={s.deleteBtn} onClick={() => setDeleteConfirm(e.id)}>✕</button>
-                  )}
-                </div>
-              </div>
-            </div>
+            <EintragKarte key={e.id} e={e} s={s} dark={darkMode} TAGESARTEN={TAGESARTEN} formatDate={formatDate} zeigeDelete onDelete={(id) => setDeleteConfirm(id)} />
           ))}
         </div>
       )}
@@ -628,7 +784,7 @@ export default function App() {
         <div style={s.cardTitle}>Neuer Eintrag</div>
 
         {/* Tagesart */}
-        <div style={s.tagesartGrid}>
+        <div style={{ ...s.tagesartGrid, gridTemplateColumns: `repeat(${TAGESARTEN.length}, 1fr)` }}>
           {TAGESARTEN.map((t) => (
             <button
               key={t.key}
@@ -641,15 +797,50 @@ export default function App() {
           ))}
         </div>
 
-        {/* Datum */}
-        <label style={{ ...s.label, textAlign: "center" }}>Datum *</label>
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <input style={{ ...s.input, width: "auto", minWidth: 160, maxWidth: 200, textAlign: "center" }} type="date" name="datum" value={form.datum} onChange={handleChange} />
+        {/* Kalender */}
+        <div style={s.kalenderWrap} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+          <div style={s.kalenderHeader}>
+            <button style={s.kalenderNavBtn} onClick={vorherigerMonat}>‹</button>
+            <div style={s.kalenderTitelWrap}>
+              <span style={s.kalenderTitel}>{MONATSNAMEN[kalenderDatum.monat]} {kalenderDatum.jahr}</span>
+              <button style={s.kalenderHeuteBtn} onClick={heuteAnzeigen}>Heute</button>
+            </div>
+            <button style={s.kalenderNavBtn} onClick={naechsterMonat}>›</button>
+          </div>
+
+          <div style={s.kalenderWochentage}>
+            {WOCHENTAGE_KURZ.map((w) => (
+              <div key={w} style={s.kalenderWochentag}>{w}</div>
+            ))}
+          </div>
+
+          <div style={s.kalenderGrid}>
+            {getMonatsTage(kalenderDatum.jahr, kalenderDatum.monat).map((tag, i) => {
+              if (!tag) return <div key={"leer" + i} />;
+              const dateStr = toDateStr(tag);
+              const stat = tagStatus(dateStr, eintraege, heute);
+              const istAusgewaehlt = dateStr === form.datum;
+              let zellStyle = { ...s.kalenderTag };
+              if (stat === "entry") zellStyle = { ...zellStyle, ...s.kalenderTagEntry };
+              else if (stat === "missing") zellStyle = { ...zellStyle, ...s.kalenderTagMissing };
+              if (istAusgewaehlt) zellStyle = { ...zellStyle, ...s.kalenderTagSelected };
+              return (
+                <button key={dateStr} style={zellStyle} onClick={() => onTagKlick(dateStr)}>
+                  {tag.getDate()}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* URLAUB */}
         {form.tagesart === "urlaub" && (
           <div style={s.infoBox}>🏖️ Dieser Tag wird als <b>Urlaub</b> in Notion vermerkt. Keine weiteren Angaben nötig.</div>
+        )}
+
+        {/* SCHULE */}
+        {form.tagesart === "schule" && (
+          <div style={s.infoBox}>🎓 Dieser Tag wird als <b>Schultag</b> in Notion vermerkt. Keine weiteren Angaben nötig.</div>
         )}
 
         {/* FEIERTAG */}
@@ -805,6 +996,10 @@ function getStyles(dark) {
         empty: "#48484a",
         infoBoxBg: "#1c2e1c",
         infoBoxBorder: "#2d4a2d",
+        kalenderEntryBg: "#123822",
+        kalenderEntryText: "#4ade80",
+        kalenderMissingBg: "#3a1212",
+        kalenderMissingText: "#ff6961",
       }
     : {
         bg: "#f2f2f7",
@@ -823,6 +1018,10 @@ function getStyles(dark) {
         empty: "#c7c7cc",
         infoBoxBg: "#fff8e6",
         infoBoxBorder: "#ffe4a3",
+        kalenderEntryBg: "#e3fbe9",
+        kalenderEntryText: "#1a9c46",
+        kalenderMissingBg: "#ffe5e3",
+        kalenderMissingText: "#d9261c",
       };
 
   const accent = "#007aff";
@@ -841,9 +1040,22 @@ function getStyles(dark) {
     syncBtn: { background: accent, border: "none", borderRadius: 10, padding: "8px 12px", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" },
     label: { display: "block", fontSize: 13, fontWeight: 500, color: c.textSecondary, marginBottom: 7, marginTop: 16 },
     input: { display: "block", width: "100%", background: c.inputBg, border: "1px solid transparent", borderRadius: 12, padding: "12px 14px", fontSize: 16, color: c.text, outline: "none", boxSizing: "border-box", colorScheme: dark ? "dark" : "light", fontFamily: "inherit" },
-    tagesartGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 4 },
+    tagesartGrid: { display: "grid", gap: 8, marginBottom: 4 },
     tagesartBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "12px 4px", background: c.cardBg2, border: "1.5px solid transparent", borderRadius: 14, color: c.textSecondary, fontSize: 11, fontWeight: 600, cursor: "pointer" },
     tagesartBtnOn: { border: `1.5px solid ${accent}`, color: accent, background: dark ? "#0a2647" : "#eaf2ff" },
+    kalenderWrap: { marginTop: 18, marginBottom: 4 },
+    kalenderHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+    kalenderNavBtn: { background: c.cardBg2, border: "none", borderRadius: 10, width: 32, height: 32, fontSize: 16, fontWeight: 700, color: c.text, cursor: "pointer" },
+    kalenderTitelWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2 },
+    kalenderTitel: { fontSize: 15, fontWeight: 700, color: c.text },
+    kalenderHeuteBtn: { background: "none", border: "none", color: accent, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 },
+    kalenderWochentage: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 },
+    kalenderWochentag: { textAlign: "center", fontSize: 11, fontWeight: 600, color: c.textSecondary },
+    kalenderGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 },
+    kalenderTag: { aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center", background: c.cardBg2, border: "2px solid transparent", borderRadius: 10, fontSize: 13, fontWeight: 600, color: c.text, cursor: "pointer" },
+    kalenderTagEntry: { background: c.kalenderEntryBg, color: c.kalenderEntryText },
+    kalenderTagMissing: { background: c.kalenderMissingBg, color: c.kalenderMissingText },
+    kalenderTagSelected: { border: `2px solid ${accent}` },
     infoBox: { marginTop: 16, background: c.infoBoxBg, border: `1px solid ${c.infoBoxBorder}`, borderRadius: 12, padding: "12px 14px", fontSize: 13, color: c.text, lineHeight: 1.5 },
     resultBox: { marginTop: 22, background: c.resultBg, border: `1px solid ${c.resultBorder}`, borderRadius: 18, padding: "20px 16px", textAlign: "center", minHeight: 84, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
     resultLabel: { fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: accent, marginBottom: 6, textTransform: "uppercase" },
@@ -873,13 +1085,13 @@ function getStyles(dark) {
     deleteBtn: { background: "transparent", border: "none", color: c.textTertiary, fontSize: 16, cursor: "pointer", padding: "0 2px", lineHeight: 1 },
     projektList: { marginTop: 10, borderTop: `1px solid ${c.divider}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 5 },
     projektItem: { display: "flex", alignItems: "center", gap: 8 },
-    projektDot: { color: accent, fontSize: 14 },
+    projektNr: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, borderRadius: 8, background: dark ? "#0a2647" : "#eaf2ff", color: accent, fontSize: 10, fontWeight: 700, flexShrink: 0 },
     projektName: { fontSize: 13, color: dark ? "#d1d1d6" : "#3a3a3c", flex: 1 },
     projektStunden: { fontSize: 13, fontWeight: 600, color: c.text },
     empty: { textAlign: "center", color: c.empty, padding: "48px 24px", fontSize: 14 },
     footer: { textAlign: "center", fontSize: 12, color: c.empty, padding: "28px 0 8px", fontWeight: 500 },
     overlay: { position: "fixed", inset: 0, background: c.overlayBg, backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 },
-    modal: { background: c.cardBg, borderRadius: 22, padding: 26, width: "100%", maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" },
+    modal: { background: c.cardBg, borderRadius: 22, padding: 26, width: "100%", maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.3)", maxHeight: "85vh", overflowY: "auto" },
     modalTitle: { fontSize: 18, fontWeight: 700, marginBottom: 20, color: c.text, letterSpacing: "-0.01em" },
     modalActions: { display: "flex", gap: 10, marginTop: 26 },
     cancelBtn: { flex: 1, padding: "13px", background: c.cardBg2, border: "none", borderRadius: 12, color: c.text, fontSize: 15, fontWeight: 600, cursor: "pointer" },
