@@ -256,8 +256,7 @@ function ProjektEingabe({ value, onChange, baustellen, s, c }) {
   const suche = value.trim().toLowerCase();
   const treffer = baustellen
     .filter((b) => !suche || b.name.toLowerCase().includes(suche))
-    .filter((b) => b.name.toLowerCase() !== suche)
-    .slice(0, 8);
+    .filter((b) => b.name.toLowerCase() !== suche);
 
   const istBaustelle = baustellen.some((b) => b.name.toLowerCase() === suche);
 
