@@ -1,24 +1,27 @@
 import { useState, useEffect, useRef } from "react";
 
-const STORAGE_KEY = "zeiterfassung_eintraege";
+// =====================================================================
+// Zeiterfassung – Malermeister Cürten
+// Design: finale Design-Sprache der Mitarbeiter-App
+// Notion-Zugriff läuft ausschließlich über /api/notion (Schlüssel liegt in Vercel)
+// =====================================================================
 
-// Fest hinterlegte Notion-Zugangsdaten
-const NOTION_TOKEN = "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";
+const STORAGE_KEY = "zeiterfassung_eintraege";
+const BAUSTELLEN_CACHE_KEY = "baustellen_cache";
+const BAUSTELLEN_MAX_ALTER_MS = 15 * 60 * 1000; // nach 15 Min. im Hintergrund neu laden
+
 const NOTION_DB_ARBEITSTAGE = "3906606acb1d802fbcd1c68844c94151";
 const NOTION_DB_PROJEKTE = "3906606acb1d80efa3cfc8b1312b4df2";
 
 // Soll-Arbeitszeiten pro Wochentag (0=So ... 6=Sa)
 function sollStunden(dateStr) {
-  const datumObj = new Date(dateStr + "T12:00:00");
-  const tag = datumObj.getDay();
+  const tag = new Date(dateStr + "T12:00:00").getDay();
   if (tag === 5) return 6; // Freitag
   if (tag >= 1 && tag <= 4) return 8.5; // Mo-Do
   return 0; // Wochenende
 }
 
-// Mitarbeiter: aus URL lesen und merken — wichtig für PWA:
-// Wenn die App vom Homescreen ohne ?mitarbeiter= startet, wird der
-// zuletzt verwendete Name aus dem Speicher genommen.
+// Mitarbeiter aus URL lesen und merken (PWA startet oft ohne Parameter)
 function getMitarbeiter() {
   const params = new URLSearchParams(window.location.search);
   const ausUrl = params.get("mitarbeiter");
@@ -29,9 +32,7 @@ function getMitarbeiter() {
   return localStorage.getItem("mitarbeiter_name") || "";
 }
 
-// Azubi-Kennzeichen: aus URL lesen und merken (?azubi=1) — gleiches
-// Prinzip wie beim Mitarbeiternamen, damit es auch nach "Zum
-// Home-Bildschirm hinzufügen" erhalten bleibt.
+// Azubi-Kennzeichen (?azubi=1) – gleiches Prinzip
 function getIstAzubi() {
   const params = new URLSearchParams(window.location.search);
   if (params.has("azubi")) {
@@ -49,7 +50,7 @@ function berechneArbeitszeit(start, end, pauseMin) {
   const startMin = sh * 60 + sm;
   const endMin = eh * 60 + em;
   if (endMin <= startMin) return null;
-  const nettoMin = endMin - startMin - parseFloat(pauseMin || 0);
+  const nettoMin = endMin - startMin - (parseFloat(pauseMin) || 0);
   if (nettoMin < 0) return null;
   const h = Math.floor(nettoMin / 60);
   const m = Math.round(nettoMin % 60);
@@ -62,7 +63,7 @@ function formatDate(dateStr) {
   return `${d}.${m}.${y}`;
 }
 
-// --- Datums-Helfer (lokale Zeitzone, nicht UTC — wichtig für den Kalender) ---
+// --- Datums-Helfer (lokale Zeitzone, nicht UTC) ---
 function toDateStr(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -76,38 +77,32 @@ function heuteDatumStr() {
 
 const MONATSNAMEN = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
 const WOCHENTAGE_KURZ = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const WOCHENTAGE_LANG = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
 
-// Baut die Tage-Liste für die Kalenderansicht eines Monats (Montag-Start).
-// null-Einträge sind Platzhalter vor dem 1. des Monats.
 function getMonatsTage(jahr, monat) {
   const ersterTag = new Date(jahr, monat, 1);
   const anzahlTage = new Date(jahr, monat + 1, 0).getDate();
-  let startOffset = ersterTag.getDay(); // 0=So
-  startOffset = startOffset === 0 ? 6 : startOffset - 1; // Mo=0 ... So=6
+  let startOffset = ersterTag.getDay();
+  startOffset = startOffset === 0 ? 6 : startOffset - 1;
   const tage = [];
   for (let i = 0; i < startOffset; i++) tage.push(null);
   for (let t = 1; t <= anzahlTage; t++) tage.push(new Date(jahr, monat, t));
   return tage;
 }
 
-// Bestimmt die Einfärbung eines Kalendertags:
-// "entry"   = an diesem Tag existiert (auf diesem Gerät) bereits ein Eintrag → grün
-// "missing" = Tag liegt in der Vergangenheit, ist ein Werktag, kein Eintrag vorhanden → rot
-// "neutral" = Wochenende, heute oder Zukunft → neutral/weiß
+// "entry" = erfasst (grün) · "missing" = vergangener Werktag ohne Eintrag (rot) · "neutral"
 function tagStatus(dateStr, eintraege, heute) {
-  const hatEintrag = eintraege.some((e) => e.datum === dateStr);
-  if (hatEintrag) return "entry";
+  if (eintraege.some((e) => e.datum === dateStr)) return "entry";
   if (dateStr >= heute) return "neutral";
   const dow = new Date(dateStr + "T12:00:00").getDay();
   if (dow === 0 || dow === 6) return "neutral";
   return "missing";
 }
 
-// --- Lokaler Speicher (Quelle der Wahrheit für die Sync-Warteschlange) ---
+// --- Lokaler Speicher (Offline-Queue) ---
 function ladeEintraege() {
   try {
     const roh = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    // Migration: alte Einträge ohne Sync-Felder gelten als gesendet
     return roh.map((e) => ({
       ...e,
       syncStatus: e.syncStatus || "synced",
@@ -124,11 +119,21 @@ function speichereEintraege(liste) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(liste));
 }
 
+// --- Baustellen-Liste (aus Notion, lokal zwischengespeichert) ---
+function ladeBaustellenCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(BAUSTELLEN_CACHE_KEY) || "null");
+    if (c && Array.isArray(c.liste)) return c;
+  } catch {
+    /* ignorieren */
+  }
+  return { zeit: 0, liste: [] };
+}
+
 // --- Notion-Request-Bausteine ---
+// Über-/Minusstunden werden nur geschrieben, wenn sie ≠ 0 sind (sonst bleibt die Zelle leer).
 function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeiten, mitRelation, plusMinus) {
-  const wochentage = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
-  const datumObj = new Date(datum + "T12:00:00");
-  const wochentag = wochentage[datumObj.getDay()];
+  const wochentag = WOCHENTAGE_LANG[new Date(datum + "T12:00:00").getDay()];
 
   const properties = {
     Tag: { title: [{ text: { content: wochentag } }] },
@@ -136,9 +141,10 @@ function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeite
     Gesamtarbeitszeit: { number: gesamtStd },
     Mitarbeiter: { select: { name: mitarbeiter } },
     Status: { select: { name: statusLabel } },
-    Überstunden: { number: plusMinus ? plusMinus.ueber : 0 },
-    Minusstunden: { number: plusMinus ? plusMinus.minus : 0 },
   };
+
+  if (plusMinus && plusMinus.ueber !== 0) properties.Überstunden = { number: plusMinus.ueber };
+  if (plusMinus && plusMinus.minus !== 0) properties.Minusstunden = { number: plusMinus.minus };
 
   if (zeiten) {
     properties.Arbeitsbeginn = { rich_text: [{ text: { content: zeiten.arbeitsbeginn } }] };
@@ -148,16 +154,15 @@ function baueArbeitstagRequest(datum, statusLabel, gesamtStd, mitarbeiter, zeite
 
   return {
     typ: "arbeitstag",
-    mitRelation: !!mitRelation, // bekommt beim Senden die Projekt-IDs als Relation
-    token: NOTION_TOKEN,
+    mitRelation: !!mitRelation,
     body: { parent: { database_id: NOTION_DB_ARBEITSTAGE }, properties },
   };
 }
 
-function baueProjektRequest(datum, proj, mitarbeiter) {
+// Reihenfolge wird nur geschrieben, wenn an dem Tag mehrere Projekte erfasst wurden.
+function baueProjektRequest(datum, proj, mitarbeiter, mehrereProjekte) {
   return {
     typ: "projekt",
-    token: NOTION_TOKEN,
     body: {
       parent: { database_id: NOTION_DB_PROJEKTE },
       properties: {
@@ -165,7 +170,7 @@ function baueProjektRequest(datum, proj, mitarbeiter) {
         Datum: { date: { start: datum } },
         Stunden: { number: proj.stunden },
         Mitarbeiter: { select: { name: mitarbeiter } },
-        Reihenfolge: { number: proj.reihenfolge || 1 },
+        ...(mehrereProjekte ? { Reihenfolge: { number: proj.reihenfolge } } : {}),
         ...(proj.notiz ? { Notiz: { rich_text: [{ text: { content: proj.notiz } }] } } : {}),
       },
     },
@@ -179,7 +184,7 @@ const initialForm = {
   datum: heuteDatumStr(),
   arbeitsbeginn: "",
   arbeitsende: "",
-  pauseMinuten: "0",
+  pauseMinuten: "", // bewusst leer – wird als 0 gespeichert, wenn nichts eingetragen ist
   krankTeilstunden: "",
   projekte: [emptyProjekt()],
 };
@@ -192,9 +197,110 @@ const TAGESARTEN_BASIS = [
 ];
 const TAGESART_SCHULE = { key: "schule", label: "Schule", icon: "🎓" };
 
-// Wiederverwendbare Eintrags-Kachel — genutzt sowohl in der
-// "Einträge auf diesem Gerät"-Liste als auch in der Kalender-Tagesvorschau.
-function EintragKarte({ e, s, dark, TAGESARTEN, formatDate, zeigeDelete, onDelete }) {
+// =====================================================================
+// Icons (inline SVG)
+// =====================================================================
+function IconUhr({ color = "#0A84FF", size = 26 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function IconListe({ color, size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round">
+      <path d="M8 6h12M8 12h12M8 18h12" />
+      <circle cx="4" cy="6" r="1" fill={color} />
+      <circle cx="4" cy="12" r="1" fill={color} />
+      <circle cx="4" cy="18" r="1" fill={color} />
+    </svg>
+  );
+}
+
+function IconMond({ color, size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" />
+    </svg>
+  );
+}
+
+function IconSonne({ color, size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
+  );
+}
+
+function IconBaustelle({ color, size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 21h18M5 21V10l7-5 7 5v11" />
+      <path d="M10 21v-6h4v6" />
+    </svg>
+  );
+}
+
+// =====================================================================
+// Projektfeld mit Baustellen-Vorschlägen (Freitext bleibt immer möglich)
+// =====================================================================
+function ProjektEingabe({ value, onChange, baustellen, s, c }) {
+  const [offen, setOffen] = useState(false);
+  const blurTimer = useRef(null);
+
+  const suche = value.trim().toLowerCase();
+  const treffer = baustellen
+    .filter((b) => !suche || b.name.toLowerCase().includes(suche))
+    .filter((b) => b.name.toLowerCase() !== suche)
+    .slice(0, 8);
+
+  const istBaustelle = baustellen.some((b) => b.name.toLowerCase() === suche);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        style={{ ...s.input, paddingRight: istBaustelle ? 36 : 14 }}
+        type="text"
+        placeholder={baustellen.length ? "Baustelle oder Projekt" : "Projektname"}
+        value={value}
+        autoComplete="off"
+        onChange={(e) => { onChange(e.target.value); setOffen(true); }}
+        onFocus={() => { clearTimeout(blurTimer.current); setOffen(true); }}
+        onBlur={() => { blurTimer.current = setTimeout(() => setOffen(false), 150); }}
+      />
+      {istBaustelle && (
+        <span style={s.baustelleHaken} title="Baustelle aus der Liste">
+          <IconBaustelle color="#23913B" />
+        </span>
+      )}
+      {offen && treffer.length > 0 && (
+        <div style={s.vorschlagListe}>
+          {treffer.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              style={s.vorschlagItem}
+              onClick={() => { onChange(b.name); setOffen(false); }}
+            >
+              <span style={s.vorschlagIcon}><IconBaustelle color="#23913B" size={14} /></span>
+              <span style={{ flex: 1, textAlign: "left", color: c.text }}>{b.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Eintrags-Kachel (Liste + Kalender-Tagesvorschau)
+// =====================================================================
+function EintragKarte({ e, s, TAGESARTEN, zeigeDelete, onDelete }) {
   const art = TAGESARTEN.find((t) => t.key === e.tagesart);
   return (
     <div style={s.entryCard}>
@@ -206,16 +312,16 @@ function EintragKarte({ e, s, dark, TAGESARTEN, formatDate, zeigeDelete, onDelet
               <span style={s.tagBadge}>{art.icon} {art.label}</span>
             )}
             {e.syncStatus === "synced" ? (
-              <span style={{ ...s.syncBadge, color: "#34c759", background: dark ? "#0d2b17" : "#e8f9ee" }}>✓ Gesendet</span>
+              <span style={{ ...s.syncBadge, ...s.syncOk }}>✓ Gesendet</span>
             ) : (
-              <span style={{ ...s.syncBadge, color: "#ff9500", background: dark ? "#2e1f04" : "#fff3e0" }}>⏳ Ausstehend</span>
+              <span style={{ ...s.syncBadge, ...s.syncPending }}>⏳ Ausstehend</span>
             )}
           </div>
           {e.tagesart === "normal" && e.arbeitsbeginn && (
-            <div style={s.entryMeta}>{e.arbeitsbeginn} – {e.arbeitsende} · {e.pauseMinuten} Min. Pause</div>
+            <div style={s.entryMeta}>{e.arbeitsbeginn} – {e.arbeitsende} · {e.pauseMinuten || 0} Min. Pause</div>
           )}
           {e.lastError && e.syncStatus === "pending" && (
-            <div style={{ ...s.entryMeta, color: "#ff3b30" }}>⚠️ {e.lastError}</div>
+            <div style={{ ...s.entryMeta, color: "#E5484D" }}>⚠️ {e.lastError}</div>
           )}
           {e.projekte && e.projekte.length > 0 && (
             <div style={s.projektList}>
@@ -240,58 +346,81 @@ function EintragKarte({ e, s, dark, TAGESARTEN, formatDate, zeigeDelete, onDelet
   );
 }
 
+// =====================================================================
+// App
+// =====================================================================
 export default function App() {
   const [form, setForm] = useState(initialForm);
   const [eintraege, setEintraege] = useState([]);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("dark_mode") === "true");
   const [duplikatWarnung, setDuplikatWarnung] = useState(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [zeigeEintraege, setZeigeEintraege] = useState(false);
   const [syncLaeuft, setSyncLaeuft] = useState(false);
+  const [baustellen, setBaustellen] = useState(() => ladeBaustellenCache().liste);
+  const [baustellenLaden, setBaustellenLaden] = useState(false);
   const [kalenderDatum, setKalenderDatum] = useState(() => {
     const d = new Date();
     return { jahr: d.getFullYear(), monat: d.getMonth() };
   });
-  const [vorschauTag, setVorschauTag] = useState(null); // { datum, eintraege }
+  const [vorschauTag, setVorschauTag] = useState(null);
+  const [logoFehlt, setLogoFehlt] = useState(false);
+
   const mitarbeiter = getMitarbeiter();
   const istAzubi = getIstAzubi();
   const TAGESARTEN = istAzubi ? [...TAGESARTEN_BASIS, TAGESART_SCHULE] : TAGESARTEN_BASIS;
   const submittingRef = useRef(false);
   const syncingRef = useRef(false);
   const touchStartX = useRef(null);
+  const toastTimer = useRef(null);
 
   useEffect(() => {
     const geladen = ladeEintraege();
     setEintraege(geladen);
-    speichereEintraege(geladen); // Migration persistieren
-    setDarkMode(localStorage.getItem("dark_mode") === "true");
+    speichereEintraege(geladen);
 
-    // PWA: Service Worker registrieren
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
 
-    // Online/Offline überwachen + bei Rückkehr automatisch synchronisieren
     const onOnline = () => {
       setIsOnline(true);
       syncPending();
     };
     const onOffline = () => setIsOnline(false);
+
+    // Zurück aus dem Hintergrund: Baustellen neu laden, wenn älter als 15 Minuten
+    const onSichtbar = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - ladeBaustellenCache().zeit > BAUSTELLEN_MAX_ALTER_MS) aktualisiereBaustellen();
+      syncPending();
+    };
+
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
+    document.addEventListener("visibilitychange", onSichtbar);
 
-    // Beim App-Start ausstehende Einträge senden
     syncPending();
+    aktualisiereBaustellen(); // beim App-Start einmal laden
 
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
+      document.removeEventListener("visibilitychange", onSichtbar);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const s = getStyles(darkMode);
+  const c = s.c;
+
+  const arbeitszeit = berechneArbeitszeit(form.arbeitsbeginn, form.arbeitsende, form.pauseMinuten);
+  const soll = sollStunden(form.datum);
+  const pendingCount = eintraege.filter((e) => e.syncStatus === "pending").length;
+  const heute = heuteDatumStr();
 
   function toggleDarkMode() {
     setDarkMode((d) => {
@@ -300,12 +429,27 @@ export default function App() {
     });
   }
 
-  const s = getStyles(darkMode);
-
-  const arbeitszeit = berechneArbeitszeit(form.arbeitsbeginn, form.arbeitsende, form.pauseMinuten);
-  const soll = sollStunden(form.datum);
-  const pendingCount = eintraege.filter((e) => e.syncStatus === "pending").length;
-  const heute = heuteDatumStr();
+  async function aktualisiereBaustellen() {
+    if (!navigator.onLine) return;
+    setBaustellenLaden(true);
+    try {
+      const res = await fetch("/api/notion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "baustellen" }),
+      });
+      if (res.ok) {
+        const daten = await res.json();
+        if (Array.isArray(daten.baustellen)) {
+          localStorage.setItem(BAUSTELLEN_CACHE_KEY, JSON.stringify({ zeit: Date.now(), liste: daten.baustellen }));
+          setBaustellen(daten.baustellen);
+        }
+      }
+    } catch {
+      /* offline – zwischengespeicherte Liste bleibt */
+    }
+    setBaustellenLaden(false);
+  }
 
   function handleChange(e) {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
@@ -334,8 +478,9 @@ export default function App() {
   }
 
   function showStatus(type, msg) {
+    clearTimeout(toastTimer.current);
     setStatus({ type, msg });
-    setTimeout(() => setStatus(null), 4000);
+    toastTimer.current = setTimeout(() => setStatus(null), 4500);
   }
 
   function resetForm() {
@@ -347,7 +492,7 @@ export default function App() {
     submittingRef.current = false;
   }
 
-  // --- Kalender: Monatsnavigation + Tages-Auswahl ---
+  // --- Kalender ---
   function vorherigerMonat() {
     setKalenderDatum((k) => {
       let monat = k.monat - 1, jahr = k.jahr;
@@ -367,6 +512,7 @@ export default function App() {
   function heuteAnzeigen() {
     const d = new Date();
     setKalenderDatum({ jahr: d.getFullYear(), monat: d.getMonth() });
+    setForm((f) => ({ ...f, datum: heuteDatumStr() }));
   }
 
   function onTouchStart(e) {
@@ -386,9 +532,7 @@ export default function App() {
   function onTagKlick(dateStr) {
     setForm((f) => ({ ...f, datum: dateStr }));
     const amTag = eintraege.filter((e) => e.datum === dateStr);
-    if (amTag.length > 0) {
-      setVorschauTag({ datum: dateStr, eintraege: amTag });
-    }
+    if (amTag.length > 0) setVorschauTag({ datum: dateStr, eintraege: amTag });
   }
 
   // --- Sync: ausstehende Notion-Requests abarbeiten ---
@@ -408,10 +552,10 @@ export default function App() {
       while (e.notionRequests.length > 0) {
         const req = e.notionRequests[0];
 
-        // Beim Arbeitstag-Request die gesammelten Projekt-IDs als Relation "Projekte" einfügen
-        let sendeBody = req;
+        // Arbeitstag bekommt die gesammelten Projekt-IDs als Relation "Projekte"
+        let sendeBody = { action: "createPage", body: req.body };
         if (req.mitRelation && e.projektPageIds && e.projektPageIds.length > 0) {
-          sendeBody = JSON.parse(JSON.stringify(req));
+          sendeBody = JSON.parse(JSON.stringify(sendeBody));
           sendeBody.body.properties.Projekte = {
             relation: e.projektPageIds.map((pid) => ({ id: pid })),
           };
@@ -426,23 +570,20 @@ export default function App() {
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             e.lastError = err.message || `Notion Fehler ${res.status}`;
-            break; // dieser Eintrag bleibt pending, nächster Eintrag
+            break;
           }
 
-          // Bei Projekt-Requests: ID der neu erstellten Notion-Seite merken (für die Relation)
           if (req.typ === "projekt") {
             const daten = await res.json().catch(() => null);
-            if (daten && daten.id) {
-              e.projektPageIds = [...(e.projektPageIds || []), daten.id];
-            }
+            if (daten && daten.id) e.projektPageIds = [...(e.projektPageIds || []), daten.id];
           }
 
-          e.notionRequests.shift(); // erfolgreich → Request entfernen
+          e.notionRequests.shift();
           e.lastError = null;
-          speichereEintraege(liste); // Fortschritt sofort sichern
+          speichereEintraege(liste);
         } catch {
           e.lastError = "Offline / Netzwerkfehler";
-          netzwerkProblem = true; // Netz weg → kompletten Sync abbrechen
+          netzwerkProblem = true;
           break;
         }
       }
@@ -474,66 +615,35 @@ export default function App() {
       return;
     }
 
-    if (!ueberschreibenBestaetigt) {
-      const bereitsVorhanden = eintraege.some((e) => e.datum === form.datum);
-      if (bereitsVorhanden) {
-        submittingRef.current = false;
-        setDuplikatWarnung({ datum: form.datum });
-        return;
-      }
+    if (!ueberschreibenBestaetigt && eintraege.some((e) => e.datum === form.datum)) {
+      submittingRef.current = false;
+      setDuplikatWarnung({ datum: form.datum });
+      return;
     }
 
     setLoading(true);
-
     let eintrag = null;
 
-    // --- URLAUB ---
+    const einfacherTag = (tagesart, statusLabel, stunden, anzeige) => ({
+      id: Date.now(),
+      tagesart,
+      datum: form.datum,
+      gesamtArbeitszeit: stunden,
+      gesamtArbeitszeitFormatiert: anzeige,
+      projekte: [],
+      syncStatus: "pending",
+      lastError: null,
+      notionRequests: [baueArbeitstagRequest(form.datum, statusLabel, stunden, mitarbeiter, null, false, null)],
+      projektPageIds: [],
+    });
+
     if (form.tagesart === "urlaub") {
-      eintrag = {
-        id: Date.now(),
-        tagesart: "urlaub",
-        datum: form.datum,
-        gesamtArbeitszeit: 0,
-        gesamtArbeitszeitFormatiert: "Urlaub",
-        projekte: [],
-        syncStatus: "pending",
-        lastError: null,
-        notionRequests: [baueArbeitstagRequest(form.datum, "Urlaub", 0, mitarbeiter, null, false)],
-        projektPageIds: [],
-      };
-    }
-
-    // --- SCHULE (nur wenn per Link freigeschaltet) ---
-    else if (form.tagesart === "schule") {
-      eintrag = {
-        id: Date.now(),
-        tagesart: "schule",
-        datum: form.datum,
-        gesamtArbeitszeit: 0,
-        gesamtArbeitszeitFormatiert: "Schultag",
-        projekte: [],
-        syncStatus: "pending",
-        lastError: null,
-        notionRequests: [baueArbeitstagRequest(form.datum, "Schultag", 0, mitarbeiter, null, false)],
-        projektPageIds: [],
-      };
-    }
-
-    // --- FEIERTAG ---
-    else if (form.tagesart === "feiertag") {
+      eintrag = einfacherTag("urlaub", "Urlaub", 0, "Urlaub");
+    } else if (form.tagesart === "schule") {
+      eintrag = einfacherTag("schule", "Schultag", 0, "Schultag");
+    } else if (form.tagesart === "feiertag") {
       const stunden = sollStunden(form.datum);
-      eintrag = {
-        id: Date.now(),
-        tagesart: "feiertag",
-        datum: form.datum,
-        gesamtArbeitszeit: stunden,
-        gesamtArbeitszeitFormatiert: `${stunden}h (Feiertag)`,
-        projekte: [],
-        syncStatus: "pending",
-        lastError: null,
-        notionRequests: [baueArbeitstagRequest(form.datum, "Feiertag", stunden, mitarbeiter, null, false)],
-        projektPageIds: [],
-      };
+      eintrag = einfacherTag("feiertag", "Feiertag", stunden, `${stunden}h (Feiertag)`);
     }
 
     // --- KRANK ---
@@ -557,20 +667,18 @@ export default function App() {
         }
       }
 
-      const projekte = valideProjekte.map((p, idx) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "", reihenfolge: idx + 1 }));
-      const requests = [];
-      // Projekte zuerst senden, damit ihre IDs für die Relation vorliegen
-      for (const p of projekte) {
-        requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
-      }
+      const projekte = teilstunden > 0
+        ? valideProjekte.map((p, idx) => ({ name: p.name.trim(), stunden: parseFloat(p.stunden) || 0, notiz: p.notiz.trim(), reihenfolge: idx + 1 }))
+        : [];
+      const mehrere = projekte.length > 1;
+      const requests = projekte.map((p) => baueProjektRequest(form.datum, p, mitarbeiter, mehrere));
+
       if (teilstunden > 0) {
-        // Normal-Eintrag bekommt die Projekt-Relation (gearbeitete Stunden gehören zu den Projekten).
-        // Keine Minusstunden – die Krankheit füllt den Tag auf. Überstunden nur, falls
-        // trotz Krankheit mehr als die Soll-Zeit gearbeitet wurde.
+        // Keine Minusstunden – die Krankheit füllt den Tag auf.
         const ueberKrank = Math.max(Math.round((teilstunden - sollHeute) * 100) / 100, 0);
         requests.push(baueArbeitstagRequest(form.datum, "Normal", teilstunden, mitarbeiter, null, true, { ueber: ueberKrank, minus: 0 }));
       }
-      requests.push(baueArbeitstagRequest(form.datum, "Krankheit", restKrankheit, mitarbeiter, null, false));
+      requests.push(baueArbeitstagRequest(form.datum, "Krankheit", restKrankheit, mitarbeiter, null, false, null));
 
       eintrag = {
         id: Date.now(),
@@ -614,23 +722,20 @@ export default function App() {
         return;
       }
 
-      const projekte = valideProjekte.map((p, idx) => ({ name: p.name, stunden: parseFloat(p.stunden) || 0, notiz: p.notiz || "", reihenfolge: idx + 1 }));
+      const projekte = valideProjekte.map((p, idx) => ({ name: p.name.trim(), stunden: parseFloat(p.stunden) || 0, notiz: p.notiz.trim(), reihenfolge: idx + 1 }));
+      const mehrere = projekte.length > 1;
+      const requests = projekte.map((p) => baueProjektRequest(form.datum, p, mitarbeiter, mehrere));
 
-      const requests = [];
-      // Projekte zuerst senden, damit ihre IDs für die Relation vorliegen
-      for (const p of projekte) {
-        requests.push(baueProjektRequest(form.datum, p, mitarbeiter));
-      }
-      // Über-/Minusstunden gegenüber der Soll-Arbeitszeit berechnen
-      // (Mo-Do 8,5h · Fr 6h · Sa/So 0h → am Wochenende ist alles Überstunden)
+      // Über-/Minusstunden gegenüber Soll (Mo-Do 8,5h · Fr 6h · Wochenende 0h)
       const diff = Math.round((nettoStunden - sollStunden(form.datum)) * 100) / 100;
       const plusMinus = { ueber: Math.max(diff, 0), minus: Math.min(diff, 0) };
+      const pause = parseFloat(form.pauseMinuten) || 0;
 
       requests.push(
         baueArbeitstagRequest(form.datum, "Normal", nettoStunden, mitarbeiter, {
           arbeitsbeginn: form.arbeitsbeginn,
           arbeitsende: form.arbeitsende,
-          pauseMinuten: parseFloat(form.pauseMinuten || 0),
+          pauseMinuten: pause,
         }, true, plusMinus)
       );
 
@@ -640,7 +745,7 @@ export default function App() {
         datum: form.datum,
         arbeitsbeginn: form.arbeitsbeginn,
         arbeitsende: form.arbeitsende,
-        pauseMinuten: parseFloat(form.pauseMinuten || 0),
+        pauseMinuten: pause,
         gesamtArbeitszeit: nettoStunden,
         gesamtArbeitszeitFormatiert: `${arbeitszeit.h}h ${arbeitszeit.m}m`,
         projekte,
@@ -651,21 +756,18 @@ export default function App() {
       };
     }
 
-    // Eintrag lokal sichern (als pending), Formular zurücksetzen
     const neu = [eintrag, ...ladeEintraege()];
     speichereEintraege(neu);
     setEintraege(neu);
     resetForm();
 
-    // Direkt versuchen zu senden
     await syncPending();
 
-    // Ergebnis prüfen
     const aktuell = ladeEintraege().find((e) => e.id === eintrag.id);
     if (aktuell && aktuell.syncStatus === "synced") {
       showStatus("success", "An Notion gesendet ✓");
     } else if (!navigator.onLine) {
-      showStatus("warn", "📴 Offline gespeichert – wird automatisch gesendet, sobald du wieder online bist.");
+      showStatus("warn", "Offline gespeichert – wird automatisch gesendet, sobald du wieder online bist.");
     } else {
       showStatus("warn", `Zwischengespeichert – Senden wird erneut versucht. ${aktuell?.lastError ? "(" + aktuell.lastError + ")" : ""}`);
     }
@@ -680,48 +782,62 @@ export default function App() {
     setDeleteConfirm(null);
   }
 
+  const zeigeProjekte = form.tagesart === "normal" || (form.tagesart === "krank" && parseFloat(form.krankTeilstunden) > 0);
+  const summeProjekte = form.projekte.reduce((acc, p) => acc + (parseFloat(p.stunden) || 0), 0);
+  const zielStunden = form.tagesart === "normal"
+    ? (arbeitszeit ? parseFloat(arbeitszeit.dezimal) : null)
+    : (parseFloat(form.krankTeilstunden) || null);
+  const summePasst = zielStunden !== null && Math.abs(summeProjekte - zielStunden) <= 0.01;
+  const datumObj = new Date(form.datum + "T12:00:00");
+
   return (
     <div style={s.root}>
-      {/* Header */}
+      {/* Header: Logo links, Aktionen rechts */}
       <div style={s.header}>
-        <div>
-          <div style={s.headerLabel}>{mitarbeiter ? `Hallo ${mitarbeiter} 👋` : "ZEITERFASSUNG"}</div>
-          <div style={s.headerSub}>Arbeitszeiten erfassen</div>
+        <div style={s.logoContainer}>
+          {!logoFehlt ? (
+            <img src="/logo.png" alt="Malermeister Cürten" style={s.logo} onError={() => setLogoFehlt(true)} />
+          ) : (
+            <div style={s.logoFallback}>Malermeister Cürten</div>
+          )}
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button style={{ ...s.settingsBtn, position: "relative" }} onClick={() => setZeigeEintraege((z) => !z)}>
-            📋
+          <button style={{ ...s.headerBtn, position: "relative" }} onClick={() => setZeigeEintraege((z) => !z)} aria-label="Einträge">
+            <IconListe color={zeigeEintraege ? "#0A84FF" : c.text} />
             {pendingCount > 0 && <span style={s.pendingBadge}>{pendingCount}</span>}
           </button>
-          <button style={s.settingsBtn} onClick={toggleDarkMode}>{darkMode ? "☀️" : "🌙"}</button>
+          <button style={s.headerBtn} onClick={toggleDarkMode} aria-label="Dunkelmodus">
+            {darkMode ? <IconSonne color={c.text} /> : <IconMond color={c.text} />}
+          </button>
         </div>
       </div>
 
-      {/* Offline-Banner */}
+      <div style={s.begruessung}>
+        <div style={s.begruessungTitel}>{mitarbeiter ? `Hallo ${mitarbeiter} 👋` : "Hallo 👋"}</div>
+        <div style={s.begruessungSub}>Arbeitszeiten erfassen</div>
+      </div>
+
       {!isOnline && (
         <div style={s.offlineBanner}>
-          📴 Offline – Einträge werden zwischengespeichert und automatisch gesendet, sobald du wieder online bist.
+          Offline – Einträge werden zwischengespeichert und automatisch gesendet, sobald du wieder online bist.
         </div>
       )}
 
-      {/* Toast */}
       {status && (
-        <div style={{ ...s.toast, background: status.type === "error" ? "#ff3b30" : status.type === "warn" ? "#ff9500" : "#34c759" }}>
+        <div style={{ ...s.toast, background: status.type === "error" ? "#E5484D" : status.type === "warn" ? "#FF8A00" : "#23913B" }}>
           {status.msg}
         </div>
       )}
 
-      {/* Delete Confirm */}
+      {/* Verwerfen-Dialog */}
       {deleteConfirm && (
         <div style={s.overlay}>
           <div style={s.modal}>
             <div style={s.modalTitle}>Eintrag verwerfen?</div>
-            <div style={{ color: s.textSecondaryColor, marginBottom: 24, fontSize: 14 }}>
-              Dieser Eintrag wurde noch nicht an Notion gesendet und wird unwiderruflich verworfen.
-            </div>
+            <div style={s.modalText}>Dieser Eintrag wurde noch nicht an Notion gesendet und wird unwiderruflich verworfen.</div>
             <div style={s.modalActions}>
               <button style={s.cancelBtn} onClick={() => setDeleteConfirm(null)}>Abbrechen</button>
-              <button style={{ ...s.saveBtn, background: "#ff3b30" }} onClick={() => loescheEintrag(deleteConfirm)}>Verwerfen</button>
+              <button style={{ ...s.saveBtn, background: "#E5484D" }} onClick={() => loescheEintrag(deleteConfirm)}>Verwerfen</button>
             </div>
           </div>
         </div>
@@ -732,7 +848,7 @@ export default function App() {
         <div style={s.overlay}>
           <div style={s.modal}>
             <div style={s.modalTitle}>Eintrag bereits vorhanden?</div>
-            <div style={{ color: s.textSecondaryColor, marginBottom: 24, fontSize: 14, lineHeight: 1.5 }}>
+            <div style={s.modalText}>
               Für den <b>{formatDate(duplikatWarnung.datum)}</b> wurde von diesem Gerät aus bereits ein Eintrag gesendet.
               Möchtest du trotzdem einen weiteren Eintrag für diesen Tag senden?
             </div>
@@ -746,42 +862,44 @@ export default function App() {
 
       {/* Kalender-Tagesvorschau */}
       {vorschauTag && (
-        <div style={s.overlay}>
-          <div style={s.modal}>
+        <div style={s.overlay} onClick={() => setVorschauTag(null)}>
+          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
             <div style={s.modalTitle}>{formatDate(vorschauTag.datum)}</div>
             {vorschauTag.eintraege.map((e) => (
-              <EintragKarte key={e.id} e={e} s={s} dark={darkMode} TAGESARTEN={TAGESARTEN} formatDate={formatDate} />
+              <EintragKarte key={e.id} e={e} s={s} TAGESARTEN={TAGESARTEN} />
             ))}
-            <button style={{ ...s.cancelBtn, marginTop: 4 }} onClick={() => setVorschauTag(null)}>Schließen</button>
+            <button style={{ ...s.cancelBtn, width: "100%", marginTop: 6 }} onClick={() => setVorschauTag(null)}>Schließen</button>
           </div>
         </div>
       )}
 
-      {/* Einträge-Ansicht */}
+      {/* Einträge auf diesem Gerät */}
       {zeigeEintraege && (
         <div style={s.card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <div style={{ ...s.cardTitle, marginBottom: 0 }}>Einträge auf diesem Gerät</div>
+          <div style={s.cardKopfZeile}>
+            <div style={s.cardTitle}>Einträge auf diesem Gerät</div>
             {pendingCount > 0 && isOnline && (
               <button style={s.syncBtn} onClick={syncPending} disabled={syncLaeuft}>
-                {syncLaeuft ? "Sendet…" : "🔄 Jetzt senden"}
+                {syncLaeuft ? "Sendet…" : "Jetzt senden"}
               </button>
             )}
           </div>
-
-          {eintraege.length === 0 && (
-            <div style={{ ...s.empty, padding: "24px 12px" }}>Noch keine Einträge vorhanden.</div>
-          )}
-
+          {eintraege.length === 0 && <div style={s.empty}>Noch keine Einträge vorhanden.</div>}
           {eintraege.map((e) => (
-            <EintragKarte key={e.id} e={e} s={s} dark={darkMode} TAGESARTEN={TAGESARTEN} formatDate={formatDate} zeigeDelete onDelete={(id) => setDeleteConfirm(id)} />
+            <EintragKarte key={e.id} e={e} s={s} TAGESARTEN={TAGESARTEN} zeigeDelete onDelete={(id) => setDeleteConfirm(id)} />
           ))}
         </div>
       )}
 
-      {/* Form Card */}
+      {/* Zeiterfassung */}
       <div style={s.card}>
-        <div style={s.cardTitle}>Neuer Eintrag</div>
+        <div style={s.bereichKopf}>
+          <div style={s.iconFeld}><IconUhr /></div>
+          <div>
+            <div style={s.bereichTitel}>Zeiterfassung</div>
+            <div style={s.bereichSub}>{WOCHENTAGE_LANG[datumObj.getDay()]}, {formatDate(form.datum)}</div>
+          </div>
+        </div>
 
         {/* Tagesart */}
         <div style={{ ...s.tagesartGrid, gridTemplateColumns: `repeat(${TAGESARTEN.length}, 1fr)` }}>
@@ -800,18 +918,16 @@ export default function App() {
         {/* Kalender */}
         <div style={s.kalenderWrap} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           <div style={s.kalenderHeader}>
-            <button style={s.kalenderNavBtn} onClick={vorherigerMonat}>‹</button>
+            <button style={s.kalenderNavBtn} onClick={vorherigerMonat} aria-label="Vorheriger Monat">‹</button>
             <div style={s.kalenderTitelWrap}>
               <span style={s.kalenderTitel}>{MONATSNAMEN[kalenderDatum.monat]} {kalenderDatum.jahr}</span>
               <button style={s.kalenderHeuteBtn} onClick={heuteAnzeigen}>Heute</button>
             </div>
-            <button style={s.kalenderNavBtn} onClick={naechsterMonat}>›</button>
+            <button style={s.kalenderNavBtn} onClick={naechsterMonat} aria-label="Nächster Monat">›</button>
           </div>
 
           <div style={s.kalenderWochentage}>
-            {WOCHENTAGE_KURZ.map((w) => (
-              <div key={w} style={s.kalenderWochentag}>{w}</div>
-            ))}
+            {WOCHENTAGE_KURZ.map((w) => <div key={w} style={s.kalenderWochentag}>{w}</div>)}
           </div>
 
           <div style={s.kalenderGrid}>
@@ -819,11 +935,11 @@ export default function App() {
               if (!tag) return <div key={"leer" + i} />;
               const dateStr = toDateStr(tag);
               const stat = tagStatus(dateStr, eintraege, heute);
-              const istAusgewaehlt = dateStr === form.datum;
               let zellStyle = { ...s.kalenderTag };
               if (stat === "entry") zellStyle = { ...zellStyle, ...s.kalenderTagEntry };
               else if (stat === "missing") zellStyle = { ...zellStyle, ...s.kalenderTagMissing };
-              if (istAusgewaehlt) zellStyle = { ...zellStyle, ...s.kalenderTagSelected };
+              if (dateStr === heute) zellStyle = { ...zellStyle, fontWeight: 800 };
+              if (dateStr === form.datum) zellStyle = { ...zellStyle, ...s.kalenderTagSelected };
               return (
                 <button key={dateStr} style={zellStyle} onClick={() => onTagKlick(dateStr)}>
                   {tag.getDate()}
@@ -831,30 +947,31 @@ export default function App() {
               );
             })}
           </div>
+
+          <div style={s.legende}>
+            <span style={s.legendeItem}><span style={{ ...s.legendePunkt, background: "#23913B" }} />erfasst</span>
+            <span style={s.legendeItem}><span style={{ ...s.legendePunkt, background: "#E5484D" }} />fehlt</span>
+          </div>
         </div>
 
-        {/* URLAUB */}
         {form.tagesart === "urlaub" && (
           <div style={s.infoBox}>🏖️ Dieser Tag wird als <b>Urlaub</b> in Notion vermerkt. Keine weiteren Angaben nötig.</div>
         )}
 
-        {/* SCHULE */}
         {form.tagesart === "schule" && (
           <div style={s.infoBox}>🎓 Dieser Tag wird als <b>Schultag</b> in Notion vermerkt. Keine weiteren Angaben nötig.</div>
         )}
 
-        {/* FEIERTAG */}
         {form.tagesart === "feiertag" && (
           <div style={s.infoBox}>
             🎉 Dieser Tag wird als <b>Feiertag</b> mit <b>{soll}h</b> in Notion vermerkt (Soll-Arbeitszeit für diesen Wochentag).
           </div>
         )}
 
-        {/* KRANK */}
         {form.tagesart === "krank" && (
           <>
             <label style={s.label}>Trotzdem gearbeitete Stunden (optional)</label>
-            <input style={s.input} type="number" name="krankTeilstunden" min="0" max="24" step="0.5"
+            <input style={s.input} type="number" inputMode="decimal" name="krankTeilstunden" min="0" max="24" step="0.5"
               placeholder="z. B. 2" value={form.krankTeilstunden} onChange={handleChange} />
             <div style={s.infoBox}>
               🤒 Soll-Arbeitszeit heute: <b>{soll}h</b>.{" "}
@@ -865,66 +982,75 @@ export default function App() {
           </>
         )}
 
-        {/* NORMAL */}
         {form.tagesart === "normal" && (
           <>
-            <div style={{ display: "flex", justifyContent: "space-around", marginTop: 0 }}>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                <label style={{ ...s.label, textAlign: "center" }}>Arbeitsbeginn *</label>
-                <input style={{ ...s.input, width: 145, textAlign: "center" }} type="time" name="arbeitsbeginn" value={form.arbeitsbeginn} onChange={handleChange} />
+            <div style={s.zeitenGrid}>
+              <div>
+                <label style={s.labelMitte}>Arbeitsbeginn</label>
+                <input style={{ ...s.input, ...s.zeitInput }} type="time" name="arbeitsbeginn" value={form.arbeitsbeginn} onChange={handleChange} />
               </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                <label style={{ ...s.label, textAlign: "center" }}>Arbeitsende *</label>
-                <input style={{ ...s.input, width: 145, textAlign: "center" }} type="time" name="arbeitsende" value={form.arbeitsende} onChange={handleChange} />
+              <div>
+                <label style={s.labelMitte}>Arbeitsende</label>
+                <input style={{ ...s.input, ...s.zeitInput }} type="time" name="arbeitsende" value={form.arbeitsende} onChange={handleChange} />
               </div>
             </div>
 
-            <label style={s.label}>Pausen Minuten</label>
-            <input style={s.input} type="number" name="pauseMinuten" min="0" max="480" step="5"
-              placeholder="0" value={form.pauseMinuten} onChange={handleChange} />
+            <div style={s.pauseWrap}>
+              <label style={s.labelMitte}>Pause (Minuten)</label>
+              <input style={{ ...s.input, ...s.zeitInput }} type="number" inputMode="numeric" name="pauseMinuten" min="0" max="480" step="5"
+                placeholder="–" value={form.pauseMinuten} onChange={handleChange} />
+            </div>
 
             <div style={s.resultBox}>
               {arbeitszeit ? (
                 <>
-                  <div style={s.resultLabel}>NETTO-ARBEITSZEIT</div>
+                  <div style={s.resultLabel}>Gesamtstunden</div>
                   <div style={s.resultValue}>
                     {arbeitszeit.h}<span style={s.resultUnit}>h</span>{" "}
                     {arbeitszeit.m}<span style={s.resultUnit}>m</span>
                   </div>
-                  <div style={s.resultDezimal}>{arbeitszeit.dezimal} Stunden</div>
+                  <div style={s.resultDezimal}>
+                    {arbeitszeit.dezimal} Stunden · Soll {String(soll).replace(".", ",")}h
+                  </div>
                 </>
               ) : (
-                <div style={s.resultPlaceholder}>— Zeiten eingeben —</div>
+                <div style={s.resultPlaceholder}>Zeiten eingeben</div>
               )}
             </div>
           </>
         )}
 
         {/* Projekte */}
-        {(form.tagesart === "normal" || (form.tagesart === "krank" && parseFloat(form.krankTeilstunden) > 0)) && (
+        {zeigeProjekte && (
           <>
             <div style={s.divider} />
-            <div style={s.sectionLabel}>PROJEKTE</div>
+            <div style={s.projekteKopf}>
+              <div style={s.sectionLabel}>Projekte</div>
+              <button style={s.aktualisierenBtn} onClick={aktualisiereBaustellen} disabled={baustellenLaden}>
+                {baustellenLaden ? "Lädt…" : "↻ Baustellen"}
+              </button>
+            </div>
 
             {form.projekte.map((proj, idx) => (
               <div key={proj.id} style={s.projektBlock}>
                 <div style={s.projektRow}>
-                  <div style={{ flex: 1 }}>
-                    {idx === 0 && <div style={s.colLabel}>Name / Projekt</div>}
-                    <input
-                      style={s.input}
-                      type="text"
-                      placeholder="Projektname"
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {idx === 0 && <div style={s.colLabel}>Baustelle / Projekt</div>}
+                    <ProjektEingabe
                       value={proj.name}
-                      onChange={(e) => handleProjektChange(proj.id, "name", e.target.value)}
+                      onChange={(v) => handleProjektChange(proj.id, "name", v)}
+                      baustellen={baustellen}
+                      s={s}
+                      c={c}
                     />
                   </div>
-                  <div style={{ width: 12 }} />
-                  <div style={{ width: 80 }}>
+                  <div style={{ width: 10 }} />
+                  <div style={{ width: 76, flexShrink: 0 }}>
                     {idx === 0 && <div style={s.colLabel}>Stunden</div>}
                     <input
-                      style={{ ...s.input, textAlign: "center", paddingLeft: 8, paddingRight: 8 }}
+                      style={{ ...s.input, textAlign: "center", paddingLeft: 6, paddingRight: 6 }}
                       type="number"
+                      inputMode="decimal"
                       min="0"
                       max="24"
                       step="0.5"
@@ -934,38 +1060,33 @@ export default function App() {
                     />
                   </div>
                   {form.projekte.length > 1 && (
-                    <button style={s.removeBtn} onClick={() => removeProjekt(proj.id)}>✕</button>
+                    <button style={s.removeBtn} onClick={() => removeProjekt(proj.id)} aria-label="Projekt entfernen">✕</button>
                   )}
                 </div>
                 <input
-                  style={{ ...s.input, marginTop: 8, fontSize: 14 }}
+                  style={{ ...s.input, marginTop: 8, fontSize: 15 }}
                   type="text"
-                  placeholder="Anmerkung (optional) – z. B. was wurde gemacht"
+                  placeholder="Notiz (optional) – was wurde gemacht?"
                   value={proj.notiz}
                   onChange={(e) => handleProjektChange(proj.id, "notiz", e.target.value)}
                 />
               </div>
             ))}
 
-            <button style={s.addBtn} onClick={addProjekt}>
-              <span style={s.addBtnPlus}>＋</span> Projekt hinzufügen
-            </button>
+            <button style={s.addBtn} onClick={addProjekt}>＋ Weiteres Projekt hinzufügen</button>
 
-            {(() => {
-              const summe = form.projekte.reduce((acc, p) => acc + (parseFloat(p.stunden) || 0), 0);
-              return (
-                <div style={s.summeBox}>
-                  <span style={s.summeLabel}>Summe Projektstunden</span>
-                  <span style={s.summeWert}>{summe.toFixed(1)} h</span>
-                </div>
-              );
-            })()}
+            <div style={s.summeBox}>
+              <span style={s.summeLabel}>Summe Projektstunden</span>
+              <span style={{ ...s.summeWert, color: zielStunden === null ? c.text : summePasst ? "#23913B" : "#E5484D" }}>
+                {summeProjekte.toFixed(2).replace(".", ",")} h
+                {zielStunden !== null && !summePasst && ` / ${zielStunden.toFixed(2).replace(".", ",")} h`}
+              </span>
+            </div>
           </>
         )}
 
-        {/* Submit */}
         <button style={{ ...s.submitBtn, opacity: loading ? 0.7 : 1 }} onClick={() => handleSubmit(false)} disabled={loading}>
-          {loading ? "Wird gespeichert…" : isOnline ? "📄 An Notion senden" : "📴 Offline speichern"}
+          {loading ? "Wird gespeichert…" : isOnline ? "An Notion senden" : "Offline speichern"}
         </button>
       </div>
 
@@ -977,125 +1098,165 @@ export default function App() {
   );
 }
 
+// =====================================================================
+// Styles – finale Design-Sprache
+// =====================================================================
 function getStyles(dark) {
   const c = dark
     ? {
         bg: "#000000",
-        cardBg: "#1c1c1e",
-        cardBg2: "#2c2c2e",
-        text: "#ffffff",
-        textSecondary: "#98989d",
-        textTertiary: "#636366",
-        divider: "#38383a",
-        inputBg: "#2c2c2e",
-        resultBg: "linear-gradient(160deg, #0a1f3d 0%, #14213d 100%)",
-        resultBorder: "#1f3a63",
-        resultDezimal: "#6ea8e8",
-        shadow: "0 1px 3px rgba(0,0,0,0.3)",
-        overlayBg: "rgba(0,0,0,0.6)",
-        empty: "#48484a",
-        infoBoxBg: "#1c2e1c",
-        infoBoxBorder: "#2d4a2d",
-        kalenderEntryBg: "#123822",
-        kalenderEntryText: "#4ade80",
-        kalenderMissingBg: "#3a1212",
-        kalenderMissingText: "#ff6961",
+        card: "#1C1C1E",
+        feld: "#2C2C2E",
+        text: "#F2F2F7",
+        sek: "#A1A1AA",
+        sek2: "#8E8E93",
+        divider: "#38383A",
+        schatten: "0 8px 24px rgba(0,0,0,.35)",
+        blauBg: "#0B2A4A",
+        gruenBg: "#123822",
+        gruen: "#4ADE80",
+        rotBg: "#3A1212",
+        rot: "#FF6961",
+        infoBg: "#2A2416",
+        infoRand: "#4A3D1C",
+        overlay: "rgba(0,0,0,.6)",
       }
     : {
-        bg: "#f2f2f7",
-        cardBg: "#ffffff",
-        cardBg2: "#f2f2f7",
-        text: "#1c1c1e",
-        textSecondary: "#8e8e93",
-        textTertiary: "#c7c7cc",
-        divider: "#e5e5ea",
-        inputBg: "#f2f2f7",
-        resultBg: "linear-gradient(160deg, #eaf2ff 0%, #f5f8ff 100%)",
-        resultBorder: "#dce8fb",
-        resultDezimal: "#6e93c4",
-        shadow: "0 1px 3px rgba(0,0,0,0.04)",
-        overlayBg: "rgba(0,0,0,0.35)",
-        empty: "#c7c7cc",
-        infoBoxBg: "#fff8e6",
-        infoBoxBorder: "#ffe4a3",
-        kalenderEntryBg: "#e3fbe9",
-        kalenderEntryText: "#1a9c46",
-        kalenderMissingBg: "#ffe5e3",
-        kalenderMissingText: "#d9261c",
+        bg: "#F2F2F7",
+        card: "#FFFFFF",
+        feld: "#F2F2F7",
+        text: "#1D2735",
+        sek: "#5F6977",
+        sek2: "#7D8795",
+        divider: "#E6E8EC",
+        schatten: "0 8px 24px rgba(37,52,73,.07)",
+        blauBg: "#E8F3FF",
+        gruenBg: "#E8F7E8",
+        gruen: "#23913B",
+        rotBg: "#FDEBEA",
+        rot: "#E5484D",
+        infoBg: "#FFF0DF",
+        infoRand: "#FFE0BC",
+        overlay: "rgba(29,39,53,.35)",
       };
 
-  const accent = "#007aff";
+  const blau = "#0A84FF";
 
   return {
-    root: { fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif", background: c.bg, minHeight: "100vh", maxWidth: 480, margin: "0 auto", paddingBottom: 48, color: c.text, transition: "background 0.2s ease" },
-    header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "32px 20px 20px" },
-    headerLabel: { fontSize: 15, fontWeight: 700, letterSpacing: "0", color: c.text, marginBottom: 4 },
-    headerSub: { fontSize: 13, fontWeight: 500, color: c.textSecondary },
-    settingsBtn: { background: c.cardBg, border: "none", borderRadius: 12, width: 40, height: 40, fontSize: 17, cursor: "pointer", boxShadow: c.shadow },
-    pendingBadge: { position: "absolute", top: -5, right: -5, background: "#ff9500", color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: 10, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" },
-    offlineBanner: { margin: "0 20px 12px", borderRadius: 14, padding: "11px 14px", fontSize: 13, fontWeight: 500, color: "#fff", background: "#ff9500", lineHeight: 1.4 },
-    toast: { margin: "0 20px 12px", borderRadius: 14, padding: "13px 16px", fontSize: 14, fontWeight: 500, color: "#fff", boxShadow: "0 4px 14px rgba(0,0,0,0.12)" },
-    card: { margin: "8px 16px 12px", background: c.cardBg, borderRadius: 20, padding: "22px 18px", boxShadow: c.shadow },
-    cardTitle: { fontSize: 13, fontWeight: 600, letterSpacing: "0.01em", color: c.textSecondary, marginBottom: 18, textTransform: "uppercase" },
-    syncBtn: { background: accent, border: "none", borderRadius: 10, padding: "8px 12px", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" },
-    label: { display: "block", fontSize: 13, fontWeight: 500, color: c.textSecondary, marginBottom: 7, marginTop: 16 },
-    input: { display: "block", width: "100%", background: c.inputBg, border: "1px solid transparent", borderRadius: 12, padding: "12px 14px", fontSize: 16, color: c.text, outline: "none", boxSizing: "border-box", colorScheme: dark ? "dark" : "light", fontFamily: "inherit" },
+    c,
+    root: { fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif", background: c.bg, minHeight: "100vh", maxWidth: 480, margin: "0 auto", padding: "0 0 48px", color: c.text, boxSizing: "border-box", textAlign: "left" },
+
+    // Header
+    header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "calc(env(safe-area-inset-top, 0px) + 18px) 16px 6px" },
+    logoContainer: { width: 170, height: 58, display: "flex", alignItems: "center", boxSizing: "border-box", ...(dark ? { background: "#FFFFFF", borderRadius: 14, padding: "4px 10px" } : {}) },
+    logo: { maxWidth: "100%", maxHeight: "100%", objectFit: "contain" },
+    logoFallback: { fontSize: 18, fontWeight: 800, color: c.text, letterSpacing: "-0.01em" },
+    headerBtn: { background: c.card, border: "none", borderRadius: 14, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: c.schatten },
+    pendingBadge: { position: "absolute", top: -5, right: -5, background: "#FF8A00", color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: 10, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" },
+
+    begruessung: { padding: "14px 20px 14px" },
+    begruessungTitel: { fontSize: 26, fontWeight: 800, color: c.text, letterSpacing: "-0.02em" },
+    begruessungSub: { fontSize: 15, color: c.sek, marginTop: 2 },
+
+    offlineBanner: { margin: "0 16px 12px", borderRadius: 16, padding: "12px 14px", fontSize: 13, fontWeight: 600, color: "#fff", background: "#FF8A00", lineHeight: 1.4 },
+    toast: { margin: "0 16px 12px", borderRadius: 16, padding: "13px 16px", fontSize: 14, fontWeight: 600, color: "#fff", boxShadow: "0 8px 24px rgba(37,52,73,.15)" },
+
+    // Karten
+    card: { margin: "0 16px 14px", background: c.card, borderRadius: 24, padding: "20px 18px", boxShadow: c.schatten },
+    cardKopfZeile: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+    cardTitle: { fontSize: 17, fontWeight: 700, color: c.text },
+    bereichKopf: { display: "flex", alignItems: "center", gap: 14, marginBottom: 18 },
+    iconFeld: { width: 52, height: 52, borderRadius: 20, background: c.blauBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+    bereichTitel: { fontSize: 20, fontWeight: 800, color: c.text, letterSpacing: "-0.01em" },
+    bereichSub: { fontSize: 14, color: c.sek, marginTop: 2 },
+    syncBtn: { background: blau, border: "none", borderRadius: 12, padding: "8px 12px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" },
+
+    // Eingaben
+    label: { display: "block", fontSize: 13, fontWeight: 600, color: c.sek, marginBottom: 7, marginTop: 16 },
+    labelMitte: { display: "block", fontSize: 13, fontWeight: 600, color: c.sek, marginBottom: 7, textAlign: "center" },
+    input: { display: "block", width: "100%", background: c.feld, border: "1px solid transparent", borderRadius: 14, padding: "13px 14px", fontSize: 16, color: c.text, outline: "none", boxSizing: "border-box", colorScheme: dark ? "dark" : "light", fontFamily: "inherit", WebkitAppearance: "none", minHeight: 48 },
+    zeitInput: { textAlign: "center", fontSize: 18, fontWeight: 600, minWidth: 0, paddingLeft: 8, paddingRight: 8 },
+    zeitenGrid: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 12, marginTop: 18 },
+    pauseWrap: { width: "50%", margin: "14px auto 0" },
+
+    // Tagesart
     tagesartGrid: { display: "grid", gap: 8, marginBottom: 4 },
-    tagesartBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "12px 4px", background: c.cardBg2, border: "1.5px solid transparent", borderRadius: 14, color: c.textSecondary, fontSize: 11, fontWeight: 600, cursor: "pointer" },
-    tagesartBtnOn: { border: `1.5px solid ${accent}`, color: accent, background: dark ? "#0a2647" : "#eaf2ff" },
-    kalenderWrap: { marginTop: 18, marginBottom: 4 },
+    tagesartBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "11px 2px", background: c.feld, border: "1.5px solid transparent", borderRadius: 16, color: c.sek, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" },
+    tagesartBtnOn: { border: `1.5px solid ${blau}`, color: blau, background: c.blauBg },
+
+    // Kalender
+    kalenderWrap: { marginTop: 18 },
     kalenderHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
-    kalenderNavBtn: { background: c.cardBg2, border: "none", borderRadius: 10, width: 32, height: 32, fontSize: 16, fontWeight: 700, color: c.text, cursor: "pointer" },
+    kalenderNavBtn: { background: c.feld, border: "none", borderRadius: 12, width: 36, height: 36, fontSize: 20, fontWeight: 700, color: c.text, cursor: "pointer", lineHeight: 1 },
     kalenderTitelWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2 },
-    kalenderTitel: { fontSize: 15, fontWeight: 700, color: c.text },
-    kalenderHeuteBtn: { background: "none", border: "none", color: accent, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 },
+    kalenderTitel: { fontSize: 16, fontWeight: 800, color: c.text },
+    kalenderHeuteBtn: { background: "none", border: "none", color: blau, fontSize: 12, fontWeight: 700, cursor: "pointer", padding: 0 },
     kalenderWochentage: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 },
-    kalenderWochentag: { textAlign: "center", fontSize: 11, fontWeight: 600, color: c.textSecondary },
+    kalenderWochentag: { textAlign: "center", fontSize: 11, fontWeight: 700, color: c.sek2 },
     kalenderGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 },
-    kalenderTag: { aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center", background: c.cardBg2, border: "2px solid transparent", borderRadius: 10, fontSize: 13, fontWeight: 600, color: c.text, cursor: "pointer" },
-    kalenderTagEntry: { background: c.kalenderEntryBg, color: c.kalenderEntryText },
-    kalenderTagMissing: { background: c.kalenderMissingBg, color: c.kalenderMissingText },
-    kalenderTagSelected: { border: `2px solid ${accent}` },
-    infoBox: { marginTop: 16, background: c.infoBoxBg, border: `1px solid ${c.infoBoxBorder}`, borderRadius: 12, padding: "12px 14px", fontSize: 13, color: c.text, lineHeight: 1.5 },
-    resultBox: { marginTop: 22, background: c.resultBg, border: `1px solid ${c.resultBorder}`, borderRadius: 18, padding: "20px 16px", textAlign: "center", minHeight: 84, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
-    resultLabel: { fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: accent, marginBottom: 6, textTransform: "uppercase" },
-    resultValue: { fontSize: 40, fontWeight: 700, color: c.text, lineHeight: 1.1, letterSpacing: "-0.02em" },
-    resultUnit: { fontSize: 18, fontWeight: 500, color: accent, marginLeft: 2 },
-    resultDezimal: { fontSize: 13, color: c.resultDezimal, marginTop: 5, fontWeight: 500 },
-    resultPlaceholder: { color: c.empty, fontSize: 15 },
-    divider: { height: 1, background: c.divider, margin: "24px 0 18px" },
-    sectionLabel: { fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: c.textSecondary, marginBottom: 12, textTransform: "uppercase" },
-    colLabel: { fontSize: 12, fontWeight: 500, color: c.textSecondary, marginBottom: 6 },
+    kalenderTag: { aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center", background: c.feld, border: "2px solid transparent", borderRadius: 12, fontSize: 14, fontWeight: 600, color: c.text, cursor: "pointer", padding: 0, fontFamily: "inherit" },
+    kalenderTagEntry: { background: c.gruenBg, color: c.gruen },
+    kalenderTagMissing: { background: c.rotBg, color: c.rot },
+    kalenderTagSelected: { border: `2px solid ${blau}` },
+    legende: { display: "flex", gap: 14, justifyContent: "center", marginTop: 10 },
+    legendeItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: c.sek2, fontWeight: 600 },
+    legendePunkt: { width: 8, height: 8, borderRadius: 4, display: "inline-block" },
+
+    infoBox: { marginTop: 16, background: c.infoBg, border: `1px solid ${c.infoRand}`, borderRadius: 16, padding: "12px 14px", fontSize: 14, color: c.text, lineHeight: 1.5 },
+
+    // Gesamtstunden
+    resultBox: { marginTop: 18, background: c.blauBg, borderRadius: 20, padding: "18px 16px", textAlign: "center", minHeight: 84, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
+    resultLabel: { fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", color: blau, marginBottom: 4, textTransform: "uppercase" },
+    resultValue: { fontSize: 38, fontWeight: 800, color: c.text, lineHeight: 1.1, letterSpacing: "-0.02em" },
+    resultUnit: { fontSize: 18, fontWeight: 600, color: blau, marginLeft: 2 },
+    resultDezimal: { fontSize: 13, color: c.sek, marginTop: 5, fontWeight: 500 },
+    resultPlaceholder: { color: c.sek2, fontSize: 15, fontWeight: 500 },
+
+    // Projekte
+    divider: { height: 1, background: c.divider, margin: "22px 0 16px" },
+    projekteKopf: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+    sectionLabel: { fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", color: c.sek, textTransform: "uppercase" },
+    aktualisierenBtn: { background: "none", border: "none", color: "#23913B", fontSize: 13, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit" },
+    colLabel: { fontSize: 12, fontWeight: 600, color: c.sek2, marginBottom: 6 },
     projektBlock: { marginBottom: 14 },
-    projektRow: { display: "flex", alignItems: "flex-end", marginBottom: 0 },
-    removeBtn: { background: "transparent", border: "none", color: c.textTertiary, fontSize: 16, cursor: "pointer", padding: "0 0 0 8px", marginBottom: 3, lineHeight: 1, flexShrink: 0 },
-    addBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: c.cardBg2, border: "none", borderRadius: 12, padding: "12px 14px", color: accent, fontSize: 15, fontWeight: 600, cursor: "pointer", width: "100%", marginTop: 6 },
-    addBtnPlus: { fontSize: 17, color: accent, lineHeight: 1 },
-    summeBox: { display: "flex", justifyContent: "space-between", alignItems: "center", background: c.cardBg2, borderRadius: 12, padding: "12px 14px", marginTop: 12 },
-    summeLabel: { fontSize: 13, fontWeight: 500, color: c.textSecondary },
-    summeWert: { fontSize: 16, fontWeight: 700, color: c.text },
-    submitBtn: { marginTop: 22, width: "100%", background: accent, border: "none", borderRadius: 14, padding: "16px", fontSize: 16, fontWeight: 600, color: "#fff", cursor: "pointer", boxShadow: "0 4px 12px rgba(0,122,255,0.25)" },
-    entryCard: { background: c.cardBg2, borderRadius: 14, padding: "14px 14px", marginBottom: 10 },
+    projektRow: { display: "flex", alignItems: "flex-end" },
+    removeBtn: { background: "transparent", border: "none", color: c.sek2, fontSize: 16, cursor: "pointer", padding: "0 0 14px 8px", lineHeight: 1, flexShrink: 0 },
+    baustelleHaken: { position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", display: "flex", pointerEvents: "none" },
+    vorschlagListe: { position: "absolute", left: 0, right: 0, top: "calc(100% + 6px)", background: c.card, borderRadius: 16, boxShadow: "0 12px 32px rgba(37,52,73,.18)", zIndex: 30, maxHeight: 260, overflowY: "auto", padding: 6, border: `1px solid ${c.divider}` },
+    vorschlagItem: { display: "flex", alignItems: "center", gap: 10, width: "100%", background: "none", border: "none", borderRadius: 12, padding: "11px 10px", fontSize: 15, cursor: "pointer", fontFamily: "inherit" },
+    vorschlagIcon: { width: 28, height: 28, borderRadius: 10, background: c.gruenBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+    addBtn: { display: "block", background: "transparent", border: `1.5px dashed ${dark ? "#3A4A60" : "#B9D7FA"}`, borderRadius: 16, padding: "13px 14px", color: blau, fontSize: 15, fontWeight: 700, cursor: "pointer", width: "100%", marginTop: 4, fontFamily: "inherit" },
+    summeBox: { display: "flex", justifyContent: "space-between", alignItems: "center", background: c.feld, borderRadius: 14, padding: "12px 14px", marginTop: 12 },
+    summeLabel: { fontSize: 14, fontWeight: 600, color: c.sek },
+    summeWert: { fontSize: 16, fontWeight: 800 },
+    submitBtn: { marginTop: 20, width: "100%", background: blau, border: "none", borderRadius: 18, padding: "17px", fontSize: 17, fontWeight: 700, color: "#fff", cursor: "pointer", boxShadow: "0 8px 20px rgba(10,132,255,.28)", fontFamily: "inherit" },
+
+    // Einträge
+    entryCard: { background: c.feld, borderRadius: 16, padding: "14px", marginBottom: 10 },
     entryHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
-    entryDate: { fontSize: 15, fontWeight: 600, color: c.text, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-    tagBadge: { fontSize: 11, fontWeight: 600, color: accent, background: dark ? "#0a2647" : "#eaf2ff", padding: "3px 8px", borderRadius: 8 },
-    syncBadge: { fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 8 },
-    entryMeta: { fontSize: 13, color: c.textSecondary, marginTop: 3 },
-    entryHours: { fontSize: 13, fontWeight: 700, color: accent, textAlign: "right", maxWidth: 130 },
-    deleteBtn: { background: "transparent", border: "none", color: c.textTertiary, fontSize: 16, cursor: "pointer", padding: "0 2px", lineHeight: 1 },
+    entryDate: { fontSize: 15, fontWeight: 700, color: c.text, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    tagBadge: { fontSize: 11, fontWeight: 700, color: blau, background: c.blauBg, padding: "3px 8px", borderRadius: 8 },
+    syncBadge: { fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 8 },
+    syncOk: { color: c.gruen, background: c.gruenBg },
+    syncPending: { color: "#FF8A00", background: dark ? "#2E1F04" : "#FFF0DF" },
+    entryMeta: { fontSize: 13, color: c.sek, marginTop: 3 },
+    entryHours: { fontSize: 13, fontWeight: 800, color: blau, textAlign: "right", maxWidth: 130 },
+    deleteBtn: { background: "transparent", border: "none", color: c.sek2, fontSize: 16, cursor: "pointer", padding: "0 2px", lineHeight: 1 },
     projektList: { marginTop: 10, borderTop: `1px solid ${c.divider}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 5 },
     projektItem: { display: "flex", alignItems: "center", gap: 8 },
-    projektNr: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, borderRadius: 8, background: dark ? "#0a2647" : "#eaf2ff", color: accent, fontSize: 10, fontWeight: 700, flexShrink: 0 },
-    projektName: { fontSize: 13, color: dark ? "#d1d1d6" : "#3a3a3c", flex: 1 },
-    projektStunden: { fontSize: 13, fontWeight: 600, color: c.text },
-    empty: { textAlign: "center", color: c.empty, padding: "48px 24px", fontSize: 14 },
-    footer: { textAlign: "center", fontSize: 12, color: c.empty, padding: "28px 0 8px", fontWeight: 500 },
-    overlay: { position: "fixed", inset: 0, background: c.overlayBg, backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 },
-    modal: { background: c.cardBg, borderRadius: 22, padding: 26, width: "100%", maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.3)", maxHeight: "85vh", overflowY: "auto" },
-    modalTitle: { fontSize: 18, fontWeight: 700, marginBottom: 20, color: c.text, letterSpacing: "-0.01em" },
-    modalActions: { display: "flex", gap: 10, marginTop: 26 },
-    cancelBtn: { flex: 1, padding: "13px", background: c.cardBg2, border: "none", borderRadius: 12, color: c.text, fontSize: 15, fontWeight: 600, cursor: "pointer" },
-    saveBtn: { flex: 1, padding: "13px", background: accent, border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontWeight: 600, cursor: "pointer" },
-    textSecondaryColor: c.textSecondary,
+    projektNr: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 9, background: c.blauBg, color: blau, fontSize: 10, fontWeight: 800, flexShrink: 0 },
+    projektName: { fontSize: 13, color: c.text, flex: 1 },
+    projektStunden: { fontSize: 13, fontWeight: 700, color: c.text },
+    empty: { textAlign: "center", color: c.sek2, padding: "24px 12px", fontSize: 14 },
+    footer: { textAlign: "center", fontSize: 12, color: c.sek2, padding: "20px 0 8px", fontWeight: 500 },
+
+    // Dialoge
+    overlay: { position: "fixed", inset: 0, background: c.overlay, backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 },
+    modal: { background: c.card, borderRadius: 24, padding: 24, width: "100%", maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,.25)", maxHeight: "85vh", overflowY: "auto", boxSizing: "border-box" },
+    modalTitle: { fontSize: 19, fontWeight: 800, marginBottom: 14, color: c.text },
+    modalText: { color: c.sek, fontSize: 15, lineHeight: 1.5 },
+    modalActions: { display: "flex", gap: 10, marginTop: 22 },
+    cancelBtn: { flex: 1, padding: "14px", background: c.feld, border: "none", borderRadius: 14, color: c.text, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" },
+    saveBtn: { flex: 1, padding: "14px", background: blau, border: "none", borderRadius: 14, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" },
   };
 }
