@@ -1,0 +1,294 @@
+/* Büro-Bereich – helle Oberfläche für den Büro-Bildschirm.
+   Alle Klassen beginnen mit "b-", damit nichts mit der Mitarbeiter-App kollidiert. */
+
+body.b-body {
+  background: #f2f2f7;
+  color-scheme: light;
+}
+
+/* index.css begrenzt #root auf 1126 px – im Büro brauchen wir die volle Bildschirmbreite */
+body.b-body #root {
+  width: auto;
+  max-width: none;
+  border: none;
+  display: block;
+  text-align: left;
+}
+
+.b-app,
+.b-login,
+.b-laden-voll {
+  --b-text: #1d2735;
+  --b-sek: #5f6977;
+  --b-linie: #e3e5ea;
+  --b-karte: #ffffff;
+  --b-feld: #f2f2f7;
+  --b-blau: #0a6fd6;
+  --b-gruen: #1e7a3a;
+  --b-orange: #a35200;
+  --b-orange-bg: #fff4e5;
+  --b-orange-rand: #e8a33d;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
+  color: var(--b-text);
+  font-size: 15px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  text-align: left;
+  min-height: 100vh;
+  background: #f2f2f7;
+}
+
+.b-app *,
+.b-login * {
+  box-sizing: border-box;
+}
+
+.b-app h1,
+.b-app h2,
+.b-app h3,
+.b-login h1 {
+  font-family: inherit;
+  color: var(--b-text);
+  letter-spacing: -0.01em;
+}
+.b-app h1 { font-size: 28px; font-weight: 800; margin: 2px 0 0; }
+.b-app h2 { font-size: 18px; font-weight: 750; margin: 0 0 12px; }
+.b-app h3 { font-size: 15px; font-weight: 700; margin: 0 0 10px; }
+
+.b-sek { color: var(--b-sek); }
+.klein { font-size: 12.5px; }
+.b-fett { font-weight: 700; }
+.b-zahl { font-variant-numeric: tabular-nums; }
+.b-wachsen { flex: 1; min-width: 0; }
+
+/* ---------- Kopfzeile ---------- */
+.b-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding: 10px 24px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--b-linie);
+}
+.b-marke { display: flex; align-items: center; gap: 12px; }
+.b-logo { height: 42px; width: auto; display: block; }
+.b-logo-text { font-weight: 800; font-size: 17px; }
+.b-marke-sub {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--b-blau); background: #e8f3ff; padding: 4px 9px; border-radius: 8px;
+}
+.b-nav { display: flex; flex-wrap: wrap; gap: 4px; background: #eceef2; padding: 4px; border-radius: 12px; }
+.b-nav a {
+  padding: 9px 16px; border-radius: 9px; color: #424a56; text-decoration: none; font-weight: 600; font-size: 14px;
+}
+.b-nav a:hover { color: var(--b-text); }
+.b-nav a.aktiv { background: #fff; color: var(--b-text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+
+.b-main { padding: 24px 24px 56px; }
+.b-seite { display: flex; flex-direction: column; gap: 16px; }
+.b-schmal { max-width: 820px; margin: 0 auto; }
+
+.b-kopf { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 14px; }
+.b-ueberzeile { font-size: 12.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--b-sek); }
+.b-knopfreihe { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- Knöpfe & Felder ---------- */
+.b-btn {
+  min-height: 42px; padding: 0 16px; border-radius: 11px; border: 1px solid #cfd3da; background: #fff;
+  color: var(--b-text); font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap;
+}
+.b-btn:hover:not(:disabled) { background: #f6f7f9; }
+.b-btn:disabled { opacity: 0.5; cursor: default; }
+.b-btn-icon { width: 42px; padding: 0; font-size: 20px; }
+.b-btn-primaer { background: var(--b-blau); border-color: var(--b-blau); color: #fff; }
+.b-btn-primaer:hover:not(:disabled) { background: #075bb0; }
+.b-btn-leise { border-color: transparent; background: transparent; color: var(--b-sek); }
+
+.b-btn-klein {
+  display: inline-flex; align-items: center; min-height: 30px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid #cfd3da; background: #fff; color: var(--b-text); font: inherit; font-size: 12.5px; font-weight: 600;
+  cursor: pointer; text-decoration: none;
+}
+.b-btn-klein:hover { background: #f6f7f9; }
+.b-btn-klein.leise { border-color: transparent; color: var(--b-blau); }
+
+.b-feld { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--b-sek); font-weight: 600; }
+.b-feld input,
+.b-projektzeile input {
+  min-height: 44px; border-radius: 11px; border: 1px solid #cfd3da; padding: 0 12px; font: inherit; font-size: 16px;
+  color: var(--b-text); background: #fff; width: 100%;
+}
+.b-feld input:focus,
+.b-projektzeile input:focus { outline: 2px solid var(--b-blau); outline-offset: 0; border-color: transparent; }
+.b-wertfeld {
+  min-height: 44px; border-radius: 11px; background: var(--b-feld); display: flex; align-items: center; padding: 0 12px;
+  font-size: 16px; font-weight: 700; color: var(--b-text);
+}
+
+.b-fehler { background: #fdebea; color: #a3201f; border-radius: 12px; padding: 12px 14px; font-weight: 600; }
+.b-laden, .b-laden-voll { color: var(--b-sek); padding: 24px 0; }
+.b-laden-voll { display: flex; align-items: center; justify-content: center; }
+
+.b-karte { background: var(--b-karte); border-radius: 18px; padding: 20px; box-shadow: 0 6px 20px rgba(37, 52, 73, 0.06); }
+
+/* ---------- Chips ---------- */
+.b-hinweisleiste { display: flex; flex-wrap: wrap; gap: 8px; }
+.b-chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; padding: 5px 10px; border-radius: 999px;
+}
+.b-chip.ok { background: #e3f3e7; color: var(--b-gruen); }
+.b-chip.warnung { background: var(--b-orange-bg); color: var(--b-orange); }
+.b-chip.grau { background: #eceef2; color: #424a56; }
+.b-chipspalte { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+
+.b-banner { border-radius: 14px; padding: 13px 16px; }
+.b-banner.warnung { background: var(--b-orange-bg); color: #6b3500; }
+
+/* ---------- Saldo ---------- */
+.b-saldo { font-size: 13px; font-weight: 700; margin-left: 4px; }
+.b-saldo.gross { font-size: 16px; }
+.b-saldo-plus { color: var(--b-gruen); }
+.b-saldo-minus { color: var(--b-orange); }
+.b-saldo-null { color: var(--b-sek); }
+
+/* ---------- Wochengitter ---------- */
+.b-gitter-scroll { overflow-x: auto; padding-bottom: 6px; transition: opacity 0.15s; }
+.laedt { opacity: 0.55; }
+.b-gitter { display: grid; gap: 10px; min-width: min-content; }
+
+.b-spaltenkopf {
+  position: sticky; top: 0; display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-radius: 12px;
+  font-weight: 750; font-size: 15px;
+}
+.b-punkt { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+
+.b-tagkopf { padding-top: 10px; }
+.b-tagkopf-wt { font-size: 20px; font-weight: 800; }
+.b-tagkopf-summe { font-size: 15px; font-weight: 800; padding-top: 16px; }
+
+.b-kachel {
+  background: #fff; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 9px;
+  border-top: 4px solid #9b9a97; min-height: 120px; box-shadow: 0 2px 8px rgba(37, 52, 73, 0.05);
+}
+.b-kachel.warnung { outline: 2px solid var(--b-orange-rand); background: #fffbf4; }
+.b-kachel-leer {
+  background: transparent; border: 1.5px dashed #d2d5db; border-top: 1.5px dashed #d2d5db; box-shadow: none;
+  align-items: center; justify-content: center; color: #8a909a; font-size: 13px;
+}
+.b-kachel-leer.fehlt { border-color: #e7a6a4; color: #a3201f; background: #fdf3f2; font-weight: 600; }
+
+.b-kachel-zeit { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.b-kachel-zeit .b-zahl { font-weight: 750; font-size: 15px; }
+.b-kachel-zeit .b-sek { font-size: 12px; }
+.b-kachel-sonder { display: flex; flex-wrap: wrap; gap: 6px; }
+.b-badge-sonder { background: #eceef2; color: #3a414b; font-size: 12.5px; font-weight: 700; padding: 5px 10px; border-radius: 999px; }
+
+.b-projekte { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.b-projekte li {
+  display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 7px 9px; border-radius: 9px; background: #f4f5f8;
+}
+.b-projekte li.abweichend { background: var(--b-orange-bg); color: #6b3500; box-shadow: inset 0 0 0 1px var(--b-orange-rand); }
+.b-nr { font-size: 11.5px; color: var(--b-sek); width: 16px; flex: none; }
+.b-quadrat { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.b-quadrat.grau { background: #c4c8cf; }
+.b-projekt-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+.b-warnungen { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.b-warnungen li { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; font-weight: 700; color: var(--b-orange); }
+.b-warnungen svg { flex: none; margin-top: 1px; }
+
+.b-kachel-fuss {
+  margin-top: auto; border-top: 1px solid var(--b-linie); padding-top: 8px;
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.b-kachel-fuss .b-fett { font-size: 16px; }
+.b-kachel-aktionen { display: flex; gap: 6px; flex-wrap: wrap; }
+.b-kachel-aktionen:empty { display: none; }
+
+.b-summe { border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.b-summe-zahl { display: flex; align-items: baseline; gap: 6px; }
+.b-summe-zahl .b-zahl { font-size: 24px; font-weight: 800; }
+
+.b-legende { font-size: 12.5px; margin: 0; max-width: 900px; }
+
+/* ---------- Dialog ---------- */
+.b-overlay {
+  position: fixed; inset: 0; z-index: 100; background: rgba(29, 39, 53, 0.4); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.b-dialog {
+  background: #fff; border-radius: 22px; padding: 24px; width: 100%; max-width: 860px; max-height: 92vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 16px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+}
+.b-dialog h2 { margin: 2px 0 0; font-size: 22px; }
+.b-dialog-spalten { display: flex; flex-wrap: wrap; gap: 16px; }
+.b-block { flex: 1 1 320px; background: #f7f8fa; border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.b-block p { margin: 0; }
+.b-feldgitter { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.b-projektzeile { display: flex; align-items: center; gap: 8px; background: #fff; border-radius: 12px; padding: 6px 10px; }
+.b-projektzeile input { width: 76px; flex: none; text-align: right; }
+.b-pruefbox { border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.b-pruefbox p { margin: 0; }
+.b-pruefbox.ok { background: #e3f3e7; color: #164f28; }
+.b-pruefbox.warnung { background: var(--b-orange-bg); color: #6b3500; }
+.b-pruefbox .b-btn { align-self: flex-start; border-color: var(--b-orange-rand); }
+.b-pruefbox-zeile { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+.b-dialog-aktionen { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- Monatstabelle ---------- */
+.b-tabelle-scroll { overflow-x: auto; background: #fff; border-radius: 18px; box-shadow: 0 6px 20px rgba(37, 52, 73, 0.06); }
+.b-tabelle { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 14px; }
+.b-tabelle th {
+  text-align: left; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--b-sek);
+  font-weight: 700; padding: 14px 12px; vertical-align: bottom; border-bottom: 1px solid var(--b-linie);
+}
+.b-tabelle td { padding: 13px 12px; border-top: 1px solid #eef0f3; vertical-align: top; }
+.b-tabelle .r { text-align: right; }
+.b-tabelle td.r { font-size: 15px; }
+.b-name-chip { display: inline-block; padding: 4px 10px; border-radius: 8px; font-weight: 700; }
+
+.b-balkenliste { display: flex; flex-direction: column; gap: 14px; }
+.b-balken { display: flex; flex-direction: column; gap: 5px; }
+.b-balken-kopf { display: flex; justify-content: space-between; gap: 12px; }
+.b-balken-name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.b-balken-spur { height: 10px; background: #eceef2; border-radius: 999px; overflow: hidden; }
+.b-balken-fuell { height: 100%; border-radius: 999px; }
+
+/* ---------- Baustellen ---------- */
+.b-neu { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.b-suche { max-width: 360px; }
+.b-bliste { list-style: none; margin: 0; padding: 0; }
+.b-bliste li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid #eef0f3; }
+.b-bliste li:first-child { border-top: none; }
+.b-karte summary { cursor: pointer; list-style: none; }
+.b-karte summary::-webkit-details-marker { display: none; }
+.b-karte summary h2 { display: inline; }
+.b-karte summary::before { content: "▸ "; color: var(--b-sek); }
+.b-karte[open] summary::before { content: "▾ "; }
+.b-karte[open] summary { margin-bottom: 12px; }
+
+/* ---------- Anmeldung ---------- */
+.b-login { display: flex; align-items: center; justify-content: center; padding: 20px; }
+.b-login-karte {
+  background: #fff; border-radius: 22px; padding: 28px; width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 12px 40px rgba(37, 52, 73, 0.1);
+}
+.b-login-karte .b-logo { height: 54px; align-self: flex-start; }
+.b-login-karte h1 { margin: 6px 0 0; font-size: 26px; }
+.b-login-karte p { margin: 0; }
+
+/* ---------- Druck (Monatsabschluss als PDF) ---------- */
+@media print {
+  body.b-body, .b-app { background: #fff; }
+  .b-header, .nicht-drucken, .b-banner { display: none !important; }
+  .b-main { padding: 0; }
+  .b-tabelle-scroll, .b-karte { box-shadow: none; overflow: visible; }
+  .b-tabelle { min-width: 0; font-size: 11px; }
+  .b-karte { break-inside: avoid; }
+}
