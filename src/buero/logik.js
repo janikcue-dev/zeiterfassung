@@ -173,9 +173,23 @@ function mitarbeiterListe(daten) {
   return liste;
 }
 
-function pruefeZeitraum(daten, tage, heute, grenze = BAUSTELLEN_HINWEIS_BIS_STUNDEN) {
+// Eigene Reihenfolge aus der Büro-Ansicht anwenden; Unbekannte (z. B. neue Mitarbeiter) hinten anhängen
+export function ordneMitarbeiter(liste, reihenfolge = []) {
+  const pos = new Map(reihenfolge.map((name, i) => [name, i]));
+  return liste
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => (pos.get(a.m.name) ?? 1e6 + a.i) - (pos.get(b.m.name) ?? 1e6 + b.i))
+    .map((x) => x.m);
+}
+
+// Alle Mitarbeiter (Notion-Auswahl + Namen aus den Daten) in der eigenen Reihenfolge
+export function alleMitarbeiter(daten, reihenfolge = []) {
+  return ordneMitarbeiter(mitarbeiterListe(daten), reihenfolge);
+}
+
+function pruefeZeitraum(daten, tage, heute, grenze = BAUSTELLEN_HINWEIS_BIS_STUNDEN, reihenfolge = []) {
   const index = baueIndex(daten.arbeitstage, daten.projekte);
-  const alle = mitarbeiterListe(daten);
+  const alle = ordneMitarbeiter(mitarbeiterListe(daten), reihenfolge);
   const zellen = new Map(); // datum -> Map(mitarbeiter -> zelle)
   let abweichungen = 0;
   for (const t of tage) {
@@ -195,14 +209,20 @@ function pruefeZeitraum(daten, tage, heute, grenze = BAUSTELLEN_HINWEIS_BIS_STUN
 // ---------------------------------------------------------------------
 // Woche: Tage als Zeilen, Mitarbeiter als Spalten
 // ---------------------------------------------------------------------
-export function baueWoche(daten, montag, heute = heuteStr(), ausgeblendet = [], grenze = BAUSTELLEN_HINWEIS_BIS_STUNDEN) {
+// optionen: { ausgeblendet: [Namen], reihenfolge: [Namen], grenze: Stunden }
+export function baueWoche(daten, montag, heute = heuteStr(), optionen = {}) {
+  const { ausgeblendet = [], reihenfolge = [], grenze = BAUSTELLEN_HINWEIS_BIS_STUNDEN } = optionen;
   const alleTage = Array.from({ length: 7 }, (_, i) => addTage(montag, i));
-  const { alle, zellen } = pruefeZeitraum(daten, alleTage, heute, grenze);
+  const { alle, zellen } = pruefeZeitraum(daten, alleTage, heute, grenze, reihenfolge);
 
   // Alle Mitarbeiter aus der Notion-Auswahl – auch ohne Eintrag, damit fehlende Tage auffallen.
-  // Ehemalige blendet man über AUSGEBLENDETE_MITARBEITER in einstellungen.js aus.
+  // Ausblenden geht über "Mitarbeiter anordnen" in der Büro-Ansicht (oder einstellungen.js).
   const versteckt = new Set(ausgeblendet);
   const mitarbeiter = alle.filter((m) => !versteckt.has(m.name));
+  // Ausgeblendete, die in dieser Woche trotzdem etwas eingetragen haben → Hinweis, damit nichts untergeht
+  const ausgeblendetMitEintrag = alle
+    .filter((m) => versteckt.has(m.name) && alleTage.some((t) => !zellen.get(t).get(m.name).leer))
+    .map((m) => m.name);
 
   // Sa/So nur anzeigen, wenn jemand dort etwas eingetragen hat
   const tage = alleTage.filter((t, i) => i < 5 || mitarbeiter.some((m) => !zellen.get(t).get(m.name).leer));
@@ -230,7 +250,7 @@ export function baueWoche(daten, montag, heute = heuteStr(), ausgeblendet = [], 
     };
   });
 
-  return { mitarbeiter, zeilen, summen, warnungen, fehlend };
+  return { alle, mitarbeiter, zeilen, summen, warnungen, fehlend, ausgeblendetMitEintrag };
 }
 
 // ---------------------------------------------------------------------
@@ -248,11 +268,13 @@ export function berechneMonatswerte({ gesamt, ueberBrutto, minus }) {
   };
 }
 
-export function baueMonat(daten, jahr, monat, heute = heuteStr(), grenze = BAUSTELLEN_HINWEIS_BIS_STUNDEN) {
+// Im Monatsabschluss wird nur sortiert, nie ausgeblendet: wer Stunden hat, muss in der Abrechnung stehen.
+export function baueMonat(daten, jahr, monat, heute = heuteStr(), optionen = {}) {
+  const { reihenfolge = [], grenze = BAUSTELLEN_HINWEIS_BIS_STUNDEN } = optionen;
   const { von, bis } = monatsGrenzen(jahr, monat);
   const tage = [];
   for (let t = von; t <= bis; t = addTage(t, 1)) tage.push(t);
-  const { alle, zellen, abweichungen } = pruefeZeitraum(daten, tage, heute, grenze);
+  const { alle, zellen, abweichungen } = pruefeZeitraum(daten, tage, heute, grenze, reihenfolge);
 
   const zeilen = alle
     .map((m) => {

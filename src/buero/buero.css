@@ -292,3 +292,13 @@ body.b-body #root {
   .b-tabelle { min-width: 0; font-size: 11px; }
   .b-karte { break-inside: avoid; }
 }
+
+/* ---------- Mitarbeiter anordnen ---------- */
+.b-dialog-schmal { max-width: 560px; }
+.b-dialog p { margin: 0; }
+.b-anordnung { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.b-anordnung li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; background: #f7f8fa; }
+.b-anordnung li.aus .b-name-chip { opacity: 0.45; }
+.b-anordnung-nr { width: 22px; color: var(--b-sek); font-size: 13px; }
+.b-schalter { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--b-sek); margin-right: 6px; cursor: pointer; }
+.b-schalter input { width: 18px; height: 18px; }

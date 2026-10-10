@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { useDaten } from "./api.js";
-import { baueMonat, baustellenFarbe, farbeVon, fmtStd, heuteStr, monatAlsCsv, monatsGrenzen, MONATSNAMEN } from "./logik.js";
+import { fuehreZusammen, useAnordnung } from "./anordnung.js";
+import AnordnungDialog from "./AnordnungDialog.jsx";
+import { alleMitarbeiter, baueMonat, baustellenFarbe, farbeVon, fmtStd, heuteStr, monatAlsCsv, monatsGrenzen, MONATSNAMEN } from "./logik.js";
 
 // Monatsabschluss – jeder Monat steht für sich:
 // Minusstunden werden mit Überstunden desselben Monats aufgefüllt, nichts wird übertragen.
@@ -40,11 +42,16 @@ function Pruefung({ r }) {
 
 export default function Monatsabschluss({ api }) {
   const [auswahl, setAuswahl] = useState(vormonat);
+  const [anordnen, setAnordnen] = useState(false);
+  const anordnung = useAnordnung();
   const { von, bis } = monatsGrenzen(auswahl.jahr, auswahl.monat);
   const { daten, fehler, laedt, neuLaden } = useDaten(api, von, bis);
   const titel = `${MONATSNAMEN[auswahl.monat]} ${auswahl.jahr}`;
 
-  const monat = useMemo(() => (daten ? baueMonat(daten, auswahl.jahr, auswahl.monat, heuteStr()) : null), [daten, auswahl]);
+  const monat = useMemo(
+    () => (daten ? baueMonat(daten, auswahl.jahr, auswahl.monat, heuteStr(), { reihenfolge: anordnung.reihenfolge }) : null),
+    [daten, auswahl, anordnung.reihenfolge]
+  );
 
   function blaettern(n) {
     setAuswahl(({ jahr, monat: m }) => {
@@ -77,6 +84,7 @@ export default function Monatsabschluss({ api }) {
           <button className="b-btn b-btn-icon" aria-label="Vorheriger Monat" onClick={() => blaettern(-1)}>‹</button>
           <button className="b-btn b-btn-icon" aria-label="Nächster Monat" onClick={() => blaettern(1)}>›</button>
           <button className="b-btn" onClick={neuLaden} disabled={laedt}>{laedt ? "Lädt…" : "↻ Aktualisieren"}</button>
+          <button className="b-btn" onClick={() => setAnordnen(true)} disabled={!monat}>Mitarbeiter anordnen</button>
           <button className="b-btn" onClick={csvLaden} disabled={!monat}>CSV (Excel)</button>
           <button className="b-btn b-btn-primaer" onClick={() => window.print()} disabled={!monat}>Drucken / PDF</button>
         </div>
@@ -169,6 +177,23 @@ export default function Monatsabschluss({ api }) {
             </div>
           )}
         </>
+      )}
+      {anordnen && daten && (
+        <AnordnungDialog
+          mitarbeiter={alleMitarbeiter(daten, anordnung.reihenfolge)}
+          ausgeblendet={anordnung.eigeneAusgeblendet}
+          festAusgeblendet={[]}
+          mitAusblenden={false}
+          onSchliessen={() => setAnordnen(false)}
+          onZuruecksetzen={() => {
+            anordnung.speichere({ reihenfolge: [], ausgeblendet: anordnung.eigeneAusgeblendet });
+            setAnordnen(false);
+          }}
+          onSpeichern={(liste) => {
+            anordnung.speichere({ reihenfolge: fuehreZusammen(anordnung.reihenfolge, liste), ausgeblendet: anordnung.eigeneAusgeblendet });
+            setAnordnen(false);
+          }}
+        />
       )}
     </section>
   );

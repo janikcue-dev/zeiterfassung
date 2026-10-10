@@ -5,6 +5,8 @@ import {
   kalenderwoche, montagVon, normName, WOCHENTAGE_KURZ,
 } from "./logik.js";
 import { AUSGEBLENDETE_MITARBEITER } from "./einstellungen.js";
+import { fuehreZusammen, useAnordnung } from "./anordnung.js";
+import AnordnungDialog from "./AnordnungDialog.jsx";
 import KorrekturDialog from "./KorrekturDialog.jsx";
 
 function WarnIcon() {
@@ -101,12 +103,16 @@ function SonderZusammenfassung({ sonder }) {
 export default function Wochenuebersicht({ api }) {
   const [montag, setMontag] = useState(() => montagVon(heuteStr()));
   const [korrektur, setKorrektur] = useState(null);
+  const [anordnen, setAnordnen] = useState(false);
+  const anordnung = useAnordnung();
   const sonntag = addTage(montag, 6);
   const { daten, fehler, laedt, neuLaden } = useDaten(api, montag, sonntag);
 
   const woche = useMemo(
-    () => (daten ? baueWoche(daten, montag, heuteStr(), AUSGEBLENDETE_MITARBEITER) : null),
-    [daten, montag]
+    () => (daten
+      ? baueWoche(daten, montag, heuteStr(), { ausgeblendet: anordnung.ausgeblendet, reihenfolge: anordnung.reihenfolge })
+      : null),
+    [daten, montag, anordnung.ausgeblendet, anordnung.reihenfolge]
   );
 
   const spalten = woche ? woche.mitarbeiter.length : 0;
@@ -123,6 +129,7 @@ export default function Wochenuebersicht({ api }) {
           <button className="b-btn" onClick={() => setMontag(montagVon(heuteStr()))}>Diese Woche</button>
           <button className="b-btn b-btn-icon" aria-label="Nächste Woche" onClick={() => setMontag(addTage(montag, 7))}>›</button>
           <button className="b-btn" onClick={neuLaden} disabled={laedt}>{laedt ? "Lädt…" : "↻ Aktualisieren"}</button>
+          <button className="b-btn" onClick={() => setAnordnen(true)} disabled={!woche}>Mitarbeiter anordnen</button>
         </div>
       </div>
 
@@ -136,6 +143,9 @@ export default function Wochenuebersicht({ api }) {
             <span className="b-chip ok">Keine Abweichungen</span>
           )}
           {woche.fehlend > 0 && <span className="b-chip grau">{woche.fehlend} fehlende {woche.fehlend === 1 ? "Eintrag" : "Einträge"}</span>}
+          {woche.ausgeblendetMitEintrag.length > 0 && (
+            <span className="b-chip warnung">Ausgeblendet, aber mit Einträgen: {woche.ausgeblendetMitEintrag.join(", ")}</span>
+          )}
         </div>
       )}
 
@@ -197,6 +207,24 @@ export default function Wochenuebersicht({ api }) {
         Gesamt = gearbeitete Stunden · Plus/Minus = Über-/Minusstunden aus Notion (Soll Mo–Do 8,5 h, Fr 6 h) ·
         Orange = gleiche Baustelle mit bis zu 1 h Unterschied zwischen Kollegen, Projektsumme passt nicht oder doppelter Eintrag.
       </p>
+
+      {anordnen && woche && (
+        <AnordnungDialog
+          mitarbeiter={woche.alle}
+          ausgeblendet={anordnung.eigeneAusgeblendet}
+          festAusgeblendet={AUSGEBLENDETE_MITARBEITER}
+          mitAusblenden
+          onSchliessen={() => setAnordnen(false)}
+          onZuruecksetzen={() => {
+            anordnung.speichere({ reihenfolge: [], ausgeblendet: anordnung.eigeneAusgeblendet });
+            setAnordnen(false);
+          }}
+          onSpeichern={(liste, versteckt) => {
+            anordnung.speichere({ reihenfolge: fuehreZusammen(anordnung.reihenfolge, liste), ausgeblendet: versteckt });
+            setAnordnen(false);
+          }}
+        />
+      )}
 
       {korrektur && (
         <KorrekturDialog
