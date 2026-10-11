@@ -12,3 +12,7 @@ export const AUSGEBLENDETE_MITARBEITER = [];
 // meist echt (einer war nur vormittags dort) und würden sonst ständig warnen.
 // Wert in Stunden; null = bei jedem Unterschied warnen.
 export const BAUSTELLEN_HINWEIS_BIS_STUNDEN = 1;
+
+// Adresse der Mitarbeiter-App für die persönlichen Links (immer die Live-Adresse,
+// auch wenn du den Büro-Bereich gerade in einer Vorschau öffnest)
+export const APP_ADRESSE = "https://zeiterfassung-app-snowy.vercel.app";

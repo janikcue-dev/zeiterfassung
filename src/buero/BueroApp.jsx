@@ -4,6 +4,7 @@ import { bueroApi, gespeichertesPasswort, merkePasswort, NichtAngemeldet } from 
 import Wochenuebersicht from "./Wochenuebersicht.jsx";
 import Monatsabschluss from "./Monatsabschluss.jsx";
 import Baustellen from "./Baustellen.jsx";
+import Mitarbeiter from "./Mitarbeiter.jsx";
 
 // =====================================================================
 // Büro-Bereich – erreichbar unter  /?buero
@@ -14,6 +15,7 @@ const ANSICHTEN = [
   { key: "woche", label: "Wochenübersicht" },
   { key: "monat", label: "Monatsabschluss" },
   { key: "baustellen", label: "Baustellen" },
+  { key: "mitarbeiter", label: "Mitarbeiter" },
 ];
 
 function ansichtAusHash() {
@@ -143,6 +145,7 @@ export default function BueroApp() {
         {ansicht === "woche" && <Wochenuebersicht api={api} />}
         {ansicht === "monat" && <Monatsabschluss api={api} />}
         {ansicht === "baustellen" && <Baustellen api={api} />}
+        {ansicht === "mitarbeiter" && <Mitarbeiter api={api} />}
       </main>
     </div>
   );

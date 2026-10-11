@@ -15,8 +15,14 @@
 //   "baustelleAnlegen"     → neue Baustellen-Seite { name }
 //   "baustelleVerschieben" → { id, ziel: "archiv" | "laufend" }
 //   "korrektur"            → Arbeitstag + Projektstunden (und Projektnamen) gemeinsam ändern
+//   "zugaenge"             → Mitarbeiter mit persönlichem Link (legt die Zugänge-Datenbank beim ersten Mal an)
+//   "mitarbeiterAnlegen"   → { name, farbe, azubi } neuer Mitarbeiter + Link
+//   "zugangErneuern"       → { name } neuer Schlüssel, alter Link ist ungültig
+//   "zugangStatus"         → { name, status: "Aktiv" | "Gesperrt" }
+//   "zugangAzubi"          → { name, azubi }
 
 import { createHash, timingSafeEqual } from "node:crypto";
+import { cacheLeeren, ladeZugaenge, legeDatenbankAn, neuerSchluessel, uebergangBis } from "./_zugaenge.js";
 
 const NOTION_VERSION = "2022-06-28";
 const NOTION_VERSION_MOVE = "2026-03-11"; // der Verschiebe-Endpunkt gibt es nur in neuer API-Version
@@ -159,11 +165,106 @@ async function ladeDaten({ von, bis }) {
     farbe: o.color || "default",
   }));
 
+  // Gesperrte Mitarbeiter (gekündigt) – die Wochenübersicht blendet sie aus
+  let gesperrt = [];
+  try {
+    gesperrt = (await ladeZugaenge()).liste.filter((z) => z.status === "Gesperrt").map((z) => z.name);
+  } catch {
+    /* Zugänge sind optional für die Anzeige */
+  }
+
   return {
     mitarbeiter,
+    gesperrt,
     arbeitstage: arbeitstage.map(arbeitstagAusSeite),
     projekte: projekte.map(projektAusSeite),
   };
+}
+
+// ---------------------------------------------------------------------
+// Mitarbeiter & persönliche Links
+// ---------------------------------------------------------------------
+const NOTION_FARBEN = ["default", "gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red"];
+const heute = () => new Date().toISOString().slice(0, 10);
+
+async function zugaengeStand() {
+  let stand = await ladeZugaenge({ frisch: true });
+  if (!stand.dbId) {
+    await legeDatenbankAn();
+    stand = await ladeZugaenge({ frisch: true });
+  }
+  const schema = await notion(`databases/${DB_ARBEITSTAGE}`, { method: "GET" });
+  const optionen = schema.properties?.Mitarbeiter?.select?.options || [];
+  const namen = [...optionen.map((o) => o.name), ...stand.liste.map((z) => z.name).filter((n) => !optionen.some((o) => o.name === n))];
+  return {
+    uebergangBis: uebergangBis(stand),
+    mitarbeiter: namen.map((name) => {
+      const z = stand.liste.find((x) => x.name === name) || null;
+      return {
+        name,
+        farbe: optionen.find((o) => o.name === name)?.color || "default",
+        zugang: z && { status: z.status, schluessel: z.schluessel, erstellt: z.erstellt, azubi: z.azubi },
+      };
+    }),
+  };
+}
+
+function zugangProperties({ name, schluessel, status, azubi }) {
+  const p = {};
+  if (name !== undefined) p.Name = { title: [{ text: { content: name } }] };
+  if (schluessel !== undefined) {
+    p["Schlüssel"] = { rich_text: [{ text: { content: schluessel } }] };
+    p.Erstellt = { date: { start: heute() } };
+  }
+  if (status !== undefined) p.Status = { select: { name: status } };
+  if (azubi !== undefined) p.Azubi = { checkbox: !!azubi };
+  return p;
+}
+
+async function zugangSetzen(name, aenderung) {
+  const stand = await ladeZugaenge({ frisch: true });
+  if (!stand.dbId) throw new Fehler(409, "Bitte die Seite Mitarbeiter neu laden");
+  const z = stand.liste.find((x) => x.name === name);
+  if (z) {
+    await notion(`pages/${z.id}`, { method: "PATCH", body: JSON.stringify({ properties: zugangProperties(aenderung) }) });
+  } else {
+    await notion("pages", {
+      method: "POST",
+      body: JSON.stringify({
+        parent: { database_id: stand.dbId },
+        properties: zugangProperties({ name, status: "Aktiv", azubi: false, schluessel: neuerSchluessel(), ...aenderung }),
+      }),
+    });
+  }
+  cacheLeeren();
+  return zugaengeStand();
+}
+
+async function mitarbeiterAnlegen({ name, farbe, azubi }) {
+  const sauber = String(name || "").replace(/\s+/g, " ").trim();
+  if (!sauber || sauber.length > 60) throw new Fehler(400, "Bitte einen Namen (max. 60 Zeichen) eingeben");
+  if (sauber.includes(",")) throw new Fehler(400, "Notion erlaubt kein Komma im Namen");
+  const color = NOTION_FARBEN.includes(farbe) ? farbe : "default";
+  const stand = await zugaengeStand();
+  if (stand.mitarbeiter.some((m) => m.name.toLowerCase() === sauber.toLowerCase() && m.zugang)) {
+    throw new Fehler(409, `"${sauber}" hat schon einen Link – dort „Neuer Link“ verwenden`);
+  }
+
+  // Auswahl-Option in beiden Datenbanken anlegen (vorhandene Optionen bleiben unverändert erhalten)
+  for (const db of [DB_ARBEITSTAGE, DB_PROJEKTE]) {
+    const schema = await notion(`databases/${db}`, { method: "GET" });
+    const optionen = schema.properties?.Mitarbeiter?.select?.options || [];
+    if (optionen.some((o) => o.name === sauber)) continue;
+    await notion(`databases/${db}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        properties: {
+          Mitarbeiter: { select: { options: [...optionen.map((o) => ({ id: o.id, name: o.name, color: o.color })), { name: sauber, color }] } },
+        },
+      }),
+    });
+  }
+  return zugangSetzen(sauber, { schluessel: neuerSchluessel(), status: "Aktiv", azubi: !!azubi });
 }
 
 async function baustellenStand() {
@@ -350,10 +451,17 @@ export default async function handler(req, res) {
       case "baustelleAnlegen": return res.status(200).json(await baustelleAnlegen(daten));
       case "baustelleVerschieben": return res.status(200).json(await baustelleVerschieben(daten));
       case "korrektur": return res.status(200).json(await korrektur(daten));
+      case "zugaenge": return res.status(200).json(await zugaengeStand());
+      case "mitarbeiterAnlegen": return res.status(200).json(await mitarbeiterAnlegen(daten));
+      case "zugangErneuern": return res.status(200).json(await zugangSetzen(String(daten.name || ""), { schluessel: neuerSchluessel() }));
+      case "zugangStatus":
+        if (daten.status !== "Aktiv" && daten.status !== "Gesperrt") return res.status(400).json({ message: "Unbekannter Status" });
+        return res.status(200).json(await zugangSetzen(String(daten.name || ""), { status: daten.status }));
+      case "zugangAzubi": return res.status(200).json(await zugangSetzen(String(daten.name || ""), { azubi: !!daten.azubi }));
       default: return res.status(400).json({ message: "Unbekannte Aktion" });
     }
   } catch (e) {
-    if (e instanceof Fehler) return res.status(e.status).json({ message: e.message });
+    if (e instanceof Fehler || typeof e?.status === "number") return res.status(e.status).json({ message: e.message });
     return res.status(502).json({ message: "Notion nicht erreichbar" });
   }
 }

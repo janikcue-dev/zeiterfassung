@@ -32,6 +32,23 @@ function getMitarbeiter() {
   return localStorage.getItem("mitarbeiter_name") || "";
 }
 
+// Persönlicher Schlüssel aus dem Link (?k=…) – gleiches Prinzip.
+// Ohne gültigen Schlüssel nimmt der Server keine Einträge an (nach der Übergangswoche).
+function getSchluessel() {
+  const params = new URLSearchParams(window.location.search);
+  const ausUrl = params.get("k");
+  if (ausUrl) {
+    localStorage.setItem("mitarbeiter_schluessel", ausUrl);
+    return ausUrl;
+  }
+  return localStorage.getItem("mitarbeiter_schluessel") || "";
+}
+
+// Gemeinsame Felder für jeden Aufruf von /api/notion
+function zugangsDaten() {
+  return { schluessel: getSchluessel(), mitarbeiter: getMitarbeiter() };
+}
+
 // Azubi-Kennzeichen (?azubi=1) – gleiches Prinzip
 function getIstAzubi() {
   const params = new URLSearchParams(window.location.search);
@@ -367,6 +384,7 @@ export default function App() {
   });
   const [vorschauTag, setVorschauTag] = useState(null);
   const [logoFehlt, setLogoFehlt] = useState(false);
+  const [linkUngueltig, setLinkUngueltig] = useState(false);
 
   const mitarbeiter = getMitarbeiter();
   const istAzubi = getIstAzubi();
@@ -435,9 +453,11 @@ export default function App() {
       const res = await fetch("/api/notion", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "baustellen" }),
+        body: JSON.stringify({ action: "baustellen", ...zugangsDaten() }),
       });
+      if (res.status === 401) setLinkUngueltig(true);
       if (res.ok) {
+        setLinkUngueltig(false);
         const daten = await res.json();
         if (Array.isArray(daten.baustellen)) {
           localStorage.setItem(BAUSTELLEN_CACHE_KEY, JSON.stringify({ zeit: Date.now(), liste: daten.baustellen }));
@@ -552,7 +572,7 @@ export default function App() {
         const req = e.notionRequests[0];
 
         // Arbeitstag bekommt die gesammelten Projekt-IDs als Relation "Projekte"
-        let sendeBody = { action: "createPage", body: req.body };
+        let sendeBody = { action: "createPage", body: req.body, ...zugangsDaten() };
         if (req.mitRelation && e.projektPageIds && e.projektPageIds.length > 0) {
           sendeBody = JSON.parse(JSON.stringify(sendeBody));
           sendeBody.body.properties.Projekte = {
@@ -569,8 +589,14 @@ export default function App() {
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             e.lastError = err.message || `Notion Fehler ${res.status}`;
+            if (err.code === "LINK_UNGUELTIG") {
+              // Eintrag bleibt gespeichert und wird gesendet, sobald der neue Link geöffnet wurde
+              setLinkUngueltig(true);
+              netzwerkProblem = true;
+            }
             break;
           }
+          setLinkUngueltig(false);
 
           if (req.typ === "projekt") {
             const daten = await res.json().catch(() => null);
@@ -815,6 +841,12 @@ export default function App() {
         <div style={s.begruessungTitel}>{mitarbeiter ? `Hallo ${mitarbeiter} 👋` : "Hallo 👋"}</div>
         <div style={s.begruessungSub}>Arbeitszeiten erfassen</div>
       </div>
+
+      {linkUngueltig && (
+        <div style={{ ...s.offlineBanner, background: "#E5484D" }}>
+          Dein Link ist nicht mehr gültig. Bitte den neuen Link vom Büro öffnen – deine Einträge bleiben gespeichert und werden dann gesendet.
+        </div>
+      )}
 
       {!isOnline && (
         <div style={s.offlineBanner}>

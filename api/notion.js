@@ -7,9 +7,15 @@
 //   NOTION_TOKEN        = Secret der Notion-Integration
 //   BAUSTELLEN_PAGE_ID  = ID der Notion-Seite "Baustellen" (32 Zeichen aus dem Link)
 //
+// Sicherheit: Jeder Aufruf muss den persönlichen Schlüssel aus dem Mitarbeiter-Link mitschicken
+// (Feld "schluessel"). Der Server setzt den Mitarbeiternamen selbst – ein geänderter Name im Link
+// hat keine Wirkung. Alte Links ohne Schlüssel gehen nur noch in der Übergangswoche (siehe _zugaenge.js).
+//
 // Unterstützte Aktionen (Feld "action" im Request-Body):
 //   "createPage" (Standard) → legt einen Eintrag in Arbeitstage- oder Projekte-DB an
 //   "baustellen"            → liefert die Unterseiten der Seite "Baustellen" als Liste
+
+import { pruefeMitarbeiter, ZugangFehler } from "./_zugaenge.js";
 
 const NOTION_VERSION = "2022-06-28";
 
@@ -72,9 +78,13 @@ export default async function handler(req, res) {
 
   // Ältere App-Versionen schicken noch { token, body } ohne "action" –
   // das wird weiterhin als "createPage" behandelt (der mitgeschickte Token wird ignoriert).
-  const { action = "createPage", body } = req.body || {};
+  const { action = "createPage", body, schluessel, mitarbeiter } = req.body || {};
 
   try {
+    // Wer ist das? Name kommt bei gültigem Schlüssel vom Server, nicht vom Handy.
+    const nameImEintrag = body?.properties?.Mitarbeiter?.select?.name;
+    const zugang = await pruefeMitarbeiter({ schluessel, nameAusLink: mitarbeiter || nameImEintrag });
+
     if (action === "baustellen") {
       const pageId = process.env.BAUSTELLEN_PAGE_ID;
       if (!pageId) return res.status(200).json({ baustellen: [], hinweis: "BAUSTELLEN_PAGE_ID nicht gesetzt" });
@@ -87,12 +97,16 @@ export default async function handler(req, res) {
       if (!ERLAUBTE_DATENBANKEN.includes(dbId)) {
         return res.status(403).json({ message: "Diese Datenbank ist nicht freigegeben" });
       }
+      if (!zugang.name) return res.status(400).json({ message: "Kein Mitarbeiter angegeben" });
+      // Mitarbeiter immer vom Server festlegen
+      body.properties = { ...(body.properties || {}), Mitarbeiter: { select: { name: zugang.name } } };
       const r = await notion("pages", token, { method: "POST", body: JSON.stringify(body) });
       return res.status(r.status).json(r.data);
     }
 
     return res.status(400).json({ message: "Unbekannte Aktion" });
-  } catch {
+  } catch (e) {
+    if (e instanceof ZugangFehler) return res.status(e.status).json({ message: e.message, code: e.code });
     return res.status(502).json({ message: "Notion nicht erreichbar" });
   }
 }

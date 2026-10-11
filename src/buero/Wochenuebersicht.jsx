@@ -109,7 +109,11 @@ export default function Wochenuebersicht({ api }) {
 
   const woche = useMemo(
     () => (daten
-      ? baueWoche(daten, montag, heuteStr(), { ausgeblendet: anordnung.ausgeblendet, reihenfolge: anordnung.reihenfolge })
+      ? baueWoche(daten, montag, heuteStr(), {
+        // gesperrte (gekündigte) Mitarbeiter automatisch ausblenden
+        ausgeblendet: [...anordnung.ausgeblendet, ...(daten.gesperrt || [])],
+        reihenfolge: anordnung.reihenfolge,
+      })
       : null),
     [daten, montag, anordnung.ausgeblendet, anordnung.reihenfolge]
   );
