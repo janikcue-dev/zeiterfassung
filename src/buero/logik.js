@@ -216,7 +216,7 @@ export function baueWoche(daten, montag, heute = heuteStr(), optionen = {}) {
   const { alle, zellen } = pruefeZeitraum(daten, alleTage, heute, grenze, reihenfolge);
 
   // Alle Mitarbeiter aus der Notion-Auswahl – auch ohne Eintrag, damit fehlende Tage auffallen.
-  // Ausblenden geht über "Mitarbeiter anordnen" in der Büro-Ansicht (oder einstellungen.js).
+  // Ausblenden geht über das × am Spaltenkopf in der Büro-Ansicht (oder einstellungen.js).
   const versteckt = new Set(ausgeblendet);
   const mitarbeiter = alle.filter((m) => !versteckt.has(m.name));
   // Ausgeblendete, die in dieser Woche trotzdem etwas eingetragen haben → Hinweis, damit nichts untergeht
@@ -333,8 +333,9 @@ export function monatAlsCsv(monat, titel) {
   ];
   const z = (n) => fmtStd(n);
   const zeilen = monat.zeilen.map((r) => [
-    r.mitarbeiter.name, titel, z(r.gesamt), z(r.ueberBrutto), z(r.minus), z(r.inRegulaer),
-    z(r.regulaerNachAuffuellen), z(r.verbleibendPlus), z(r.nichtAusgeglichen),
+    // Minusstunden als negative Zahl, damit Excel richtig rechnet
+    r.mitarbeiter.name, titel, z(r.gesamt), z(r.ueberBrutto), z(-r.minus), z(r.inRegulaer),
+    z(r.regulaerNachAuffuellen), z(r.verbleibendPlus), z(-r.nichtAusgeglichen),
     r.urlaub, r.krankTage, z(r.krankStunden), r.feiertag, r.schule,
   ]);
   const zelle = (v) => `"${String(v).replace(/"/g, '""')}"`;

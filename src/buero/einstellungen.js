@@ -1,6 +1,6 @@
 // Einstellungen für den Büro-Bereich – hier kannst du ohne Programmierkenntnisse anpassen.
 
-// Normalerweise blendest du Mitarbeiter direkt in der Büro-Ansicht aus ("Mitarbeiter anordnen").
+// Normalerweise blendest du Mitarbeiter direkt in der Büro-Ansicht aus (× am Namen in der Wochenübersicht).
 // Hier eingetragene Namen sind zusätzlich auf ALLEN Geräten fest ausgeblendet.
 // Mitarbeiter, die in der Wochenübersicht NICHT als Spalte erscheinen sollen
 // (z. B. ehemalige Mitarbeiter, die noch als Auswahl in Notion stehen).

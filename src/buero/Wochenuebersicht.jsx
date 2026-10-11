@@ -5,8 +5,8 @@ import {
   kalenderwoche, montagVon, normName, WOCHENTAGE_KURZ,
 } from "./logik.js";
 import { AUSGEBLENDETE_MITARBEITER } from "./einstellungen.js";
-import { fuehreZusammen, useAnordnung } from "./anordnung.js";
-import AnordnungDialog from "./AnordnungDialog.jsx";
+import { fuehreZusammen, useAnordnung, useZiehen, verschiebe } from "./anordnung.js";
+import Griff from "./Griff.jsx";
 import KorrekturDialog from "./KorrekturDialog.jsx";
 
 function WarnIcon() {
@@ -103,7 +103,6 @@ function SonderZusammenfassung({ sonder }) {
 export default function Wochenuebersicht({ api }) {
   const [montag, setMontag] = useState(() => montagVon(heuteStr()));
   const [korrektur, setKorrektur] = useState(null);
-  const [anordnen, setAnordnen] = useState(false);
   const anordnung = useAnordnung();
   const sonntag = addTage(montag, 6);
   const { daten, fehler, laedt, neuLaden } = useDaten(api, montag, sonntag);
@@ -116,6 +115,18 @@ export default function Wochenuebersicht({ api }) {
   );
 
   const spalten = woche ? woche.mitarbeiter.length : 0;
+  const sichtbar = woche ? woche.mitarbeiter.map((m) => m.name) : [];
+  const fest = new Set(AUSGEBLENDETE_MITARBEITER);
+
+  function speichere(reihenfolge, ausgeblendet) {
+    anordnung.speichere({ reihenfolge, ausgeblendet });
+  }
+  const ziehen = useZiehen("x", sichtbar, (name, ziel, nachher) => {
+    const alle = woche.alle.map((m) => m.name);
+    speichere(fuehreZusammen(anordnung.reihenfolge, verschiebe(alle, name, ziel, nachher)), anordnung.eigeneAusgeblendet);
+  });
+  const ausblenden = (name) => speichere(anordnung.reihenfolge, [...anordnung.eigeneAusgeblendet, name]);
+  const einblenden = (name) => speichere(anordnung.reihenfolge, anordnung.eigeneAusgeblendet.filter((n) => n !== name));
 
   return (
     <section className="b-seite">
@@ -128,8 +139,16 @@ export default function Wochenuebersicht({ api }) {
           <button className="b-btn b-btn-icon" aria-label="Vorherige Woche" onClick={() => setMontag(addTage(montag, -7))}>‹</button>
           <button className="b-btn" onClick={() => setMontag(montagVon(heuteStr()))}>Diese Woche</button>
           <button className="b-btn b-btn-icon" aria-label="Nächste Woche" onClick={() => setMontag(addTage(montag, 7))}>›</button>
+          <label className="b-springen">
+            <span>Woche wählen</span>
+            <input
+              type="date"
+              value={montag}
+              onChange={(e) => e.target.value && setMontag(montagVon(e.target.value))}
+              aria-label="Zu einer Woche springen: beliebigen Tag der Woche wählen"
+            />
+          </label>
           <button className="b-btn" onClick={neuLaden} disabled={laedt}>{laedt ? "Lädt…" : "↻ Aktualisieren"}</button>
-          <button className="b-btn" onClick={() => setAnordnen(true)} disabled={!woche}>Mitarbeiter anordnen</button>
         </div>
       </div>
 
@@ -146,6 +165,21 @@ export default function Wochenuebersicht({ api }) {
           {woche.ausgeblendetMitEintrag.length > 0 && (
             <span className="b-chip warnung">Ausgeblendet, aber mit Einträgen: {woche.ausgeblendetMitEintrag.join(", ")}</span>
           )}
+          {anordnung.eigeneAusgeblendet.length > 0 && (
+            <span className="b-ausgeblendet">
+              <span className="b-sek klein">Ausgeblendet:</span>
+              {anordnung.eigeneAusgeblendet.map((n) => (
+                <button key={n} className="b-chip grau b-chip-knopf" onClick={() => einblenden(n)} title={`${n} wieder anzeigen`}>
+                  {n} ↺
+                </button>
+              ))}
+            </span>
+          )}
+          {anordnung.reihenfolge.length > 0 && (
+            <button className="b-btn-klein leise" onClick={() => speichere([], anordnung.eigeneAusgeblendet)}>
+              Reihenfolge wie in Notion
+            </button>
+          )}
         </div>
       )}
 
@@ -158,9 +192,26 @@ export default function Wochenuebersicht({ api }) {
             {woche.mitarbeiter.map((m) => {
               const f = farbeVon(m.farbe);
               return (
-                <div key={m.name} className="b-spaltenkopf" style={{ background: f.bg, color: f.fg }}>
+                <div
+                  key={m.name}
+                  className={`b-spaltenkopf${ziehen.klasse(m.name)}`}
+                  style={{ background: f.bg, color: f.fg }}
+                  {...ziehen.props(m.name)}
+                >
+                  <Griff />
                   <span className="b-punkt" style={{ background: f.akzent }} />
-                  {m.name}
+                  <span className="b-wachsen">{m.name}</span>
+                  {!fest.has(m.name) && (
+                    <button
+                      className="b-kopf-aus"
+                      draggable={false}
+                      aria-label={`${m.name} ausblenden`}
+                      title="In der Wochenübersicht ausblenden"
+                      onClick={() => ausblenden(m.name)}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -205,26 +256,9 @@ export default function Wochenuebersicht({ api }) {
 
       <p className="b-legende b-sek">
         Gesamt = gearbeitete Stunden · Plus/Minus = Über-/Minusstunden aus Notion (Soll Mo–Do 8,5 h, Fr 6 h) ·
-        Orange = gleiche Baustelle mit bis zu 1 h Unterschied zwischen Kollegen, Projektsumme passt nicht oder doppelter Eintrag.
+        Orange = gleiche Baustelle mit bis zu 1 h Unterschied zwischen Kollegen, Projektsumme passt nicht oder doppelter Eintrag ·
+        Reihenfolge ändern: Namen oben festhalten und nach links oder rechts ziehen (gilt auch für den Monatsabschluss).
       </p>
-
-      {anordnen && woche && (
-        <AnordnungDialog
-          mitarbeiter={woche.alle}
-          ausgeblendet={anordnung.eigeneAusgeblendet}
-          festAusgeblendet={AUSGEBLENDETE_MITARBEITER}
-          mitAusblenden
-          onSchliessen={() => setAnordnen(false)}
-          onZuruecksetzen={() => {
-            anordnung.speichere({ reihenfolge: [], ausgeblendet: anordnung.eigeneAusgeblendet });
-            setAnordnen(false);
-          }}
-          onSpeichern={(liste, versteckt) => {
-            anordnung.speichere({ reihenfolge: fuehreZusammen(anordnung.reihenfolge, liste), ausgeblendet: versteckt });
-            setAnordnen(false);
-          }}
-        />
-      )}
 
       {korrektur && (
         <KorrekturDialog

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useDaten } from "./api.js";
-import { fuehreZusammen, useAnordnung } from "./anordnung.js";
-import AnordnungDialog from "./AnordnungDialog.jsx";
+import { fuehreZusammen, useAnordnung, useZiehen, verschiebe } from "./anordnung.js";
+import Griff from "./Griff.jsx";
 import { alleMitarbeiter, baueMonat, baustellenFarbe, farbeVon, fmtStd, heuteStr, monatAlsCsv, monatsGrenzen, MONATSNAMEN } from "./logik.js";
 
 // Monatsabschluss – jeder Monat steht für sich:
@@ -17,6 +17,21 @@ function vormonat() {
 function Std({ wert, betont }) {
   return <span className={`b-zahl${betont ? " b-fett" : ""}`}>{fmtStd(wert)}</span>;
 }
+
+// Plus-Werte grün mit "+", Minus-Werte mit "−" wie in der Wochenübersicht; 0 grau ohne Vorzeichen
+function Vorzeichen({ wert, art, betont }) {
+  if (!wert || Math.abs(wert) < 0.005) return <span className="b-zahl b-sek">0</span>;
+  return (
+    <span className={`b-zahl ${art === "plus" ? "b-saldo-plus" : "b-saldo-minus"}${betont ? " b-fett" : ""}`}>
+      {art === "plus" ? "+" : "−"}{fmtStd(Math.abs(wert))}
+    </span>
+  );
+}
+
+const JAHRE = (() => {
+  const jetzt = new Date().getFullYear();
+  return Array.from({ length: 5 }, (_, i) => jetzt - 3 + i);
+})();
 
 function Abwesenheit({ r }) {
   const teile = [];
@@ -42,7 +57,6 @@ function Pruefung({ r }) {
 
 export default function Monatsabschluss({ api }) {
   const [auswahl, setAuswahl] = useState(vormonat);
-  const [anordnen, setAnordnen] = useState(false);
   const anordnung = useAnordnung();
   const { von, bis } = monatsGrenzen(auswahl.jahr, auswahl.monat);
   const { daten, fehler, laedt, neuLaden } = useDaten(api, von, bis);
@@ -70,6 +84,15 @@ export default function Monatsabschluss({ api }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  const sichtbar = monat ? monat.zeilen.map((r) => r.mitarbeiter.name) : [];
+  const ziehen = useZiehen("y", sichtbar, (name, ziel, nachher) => {
+    const alle = alleMitarbeiter(daten, anordnung.reihenfolge).map((m) => m.name);
+    anordnung.speichere({
+      reihenfolge: fuehreZusammen(anordnung.reihenfolge, verschiebe(alle, name, ziel, nachher)),
+      ausgeblendet: anordnung.eigeneAusgeblendet,
+    });
+  });
+
   const offen = monat ? monat.zeilen.filter((r) => r.tageMitWarnung || r.fehlendeTage || r.summenAbweichung).length : 0;
   const maxBaustelle = monat?.baustellen[0]?.stunden || 1;
 
@@ -82,9 +105,24 @@ export default function Monatsabschluss({ api }) {
         </div>
         <div className="b-knopfreihe nicht-drucken">
           <button className="b-btn b-btn-icon" aria-label="Vorheriger Monat" onClick={() => blaettern(-1)}>‹</button>
+          <select
+            className="b-auswahl"
+            aria-label="Monat"
+            value={auswahl.monat}
+            onChange={(e) => setAuswahl((a) => ({ ...a, monat: Number(e.target.value) }))}
+          >
+            {MONATSNAMEN.map((n, i) => <option key={n} value={i}>{n}</option>)}
+          </select>
+          <select
+            className="b-auswahl"
+            aria-label="Jahr"
+            value={auswahl.jahr}
+            onChange={(e) => setAuswahl((a) => ({ ...a, jahr: Number(e.target.value) }))}
+          >
+            {[...new Set([...JAHRE, auswahl.jahr])].sort().map((j) => <option key={j} value={j}>{j}</option>)}
+          </select>
           <button className="b-btn b-btn-icon" aria-label="Nächster Monat" onClick={() => blaettern(1)}>›</button>
           <button className="b-btn" onClick={neuLaden} disabled={laedt}>{laedt ? "Lädt…" : "↻ Aktualisieren"}</button>
-          <button className="b-btn" onClick={() => setAnordnen(true)} disabled={!monat}>Mitarbeiter anordnen</button>
           <button className="b-btn" onClick={csvLaden} disabled={!monat}>CSV (Excel)</button>
           <button className="b-btn b-btn-primaer" onClick={() => window.print()} disabled={!monat}>Drucken / PDF</button>
         </div>
@@ -123,19 +161,18 @@ export default function Monatsabschluss({ api }) {
                 {monat.zeilen.map((r) => {
                   const f = farbeVon(r.mitarbeiter.farbe);
                   return (
-                    <tr key={r.mitarbeiter.name}>
+                    <tr key={r.mitarbeiter.name} className={`b-ziehzeile${ziehen.klasse(r.mitarbeiter.name)}`} {...ziehen.props(r.mitarbeiter.name)}>
                       <td>
+                        <span className="b-zeilengriff nicht-drucken"><Griff /></span>
                         <span className="b-name-chip" style={{ background: f.bg, color: f.fg }}>{r.mitarbeiter.name}</span>
                       </td>
                       <td className="r"><Std wert={r.gesamt} betont /></td>
-                      <td className="r"><Std wert={r.ueberBrutto} /></td>
-                      <td className="r">{r.minus ? <Std wert={r.minus} /> : <span className="b-sek">0</span>}</td>
+                      <td className="r"><Vorzeichen wert={r.ueberBrutto} art="plus" /></td>
+                      <td className="r"><Vorzeichen wert={r.minus} art="minus" /></td>
                       <td className="r"><Std wert={r.inRegulaer} /></td>
                       <td className="r"><Std wert={r.regulaerNachAuffuellen} /></td>
                       <td className="r">
-                        <span className={`b-zahl b-fett ${r.verbleibendPlus > 0 ? "b-saldo-plus" : ""}`}>
-                          {r.verbleibendPlus > 0 ? "+" : ""}{fmtStd(r.verbleibendPlus)}
-                        </span>
+                        <Vorzeichen wert={r.verbleibendPlus} art="plus" betont />
                         {r.nichtAusgeglichen > 0 && (
                           <div className="b-saldo-minus klein">−{fmtStd(r.nichtAusgeglichen)} nicht ausgeglichen</div>
                         )}
@@ -152,6 +189,7 @@ export default function Monatsabschluss({ api }) {
           <p className="b-legende b-sek">
             Alle Werte in Stunden. In regulärer Zeit = Gesamt − Überstunden brutto. Minusstunden werden aus den
             Überstunden desselben Monats aufgefüllt; übrig bleiben die verbleibenden Plusstunden. Kein Übertrag in den Folgemonat.
+            Reihenfolge ändern: Zeile festhalten und nach oben oder unten ziehen.
           </p>
 
           {monat.baustellen.length > 0 && (
@@ -177,23 +215,6 @@ export default function Monatsabschluss({ api }) {
             </div>
           )}
         </>
-      )}
-      {anordnen && daten && (
-        <AnordnungDialog
-          mitarbeiter={alleMitarbeiter(daten, anordnung.reihenfolge)}
-          ausgeblendet={anordnung.eigeneAusgeblendet}
-          festAusgeblendet={[]}
-          mitAusblenden={false}
-          onSchliessen={() => setAnordnen(false)}
-          onZuruecksetzen={() => {
-            anordnung.speichere({ reihenfolge: [], ausgeblendet: anordnung.eigeneAusgeblendet });
-            setAnordnen(false);
-          }}
-          onSpeichern={(liste) => {
-            anordnung.speichere({ reihenfolge: fuehreZusammen(anordnung.reihenfolge, liste), ausgeblendet: anordnung.eigeneAusgeblendet });
-            setAnordnen(false);
-          }}
-        />
       )}
     </section>
   );
