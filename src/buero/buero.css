@@ -352,3 +352,157 @@ body.b-body #root {
 .b-ma-aktionen { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .b-schalter { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--b-sek); cursor: pointer; }
 .b-schalter input { width: 18px; height: 18px; }
+
+/* =====================================================================
+   Reduziertes Design (Okt 2026) – ruhige Kopfzeile, Bahnen, Detailfenster
+   ===================================================================== */
+.b-app { background: #f5f5f7; }
+.b-header {
+  background: rgba(245, 245, 247, 0.86); border-bottom: none; padding: 14px 32px;
+}
+.b-logo { height: 36px; }
+.b-marke-sub { background: transparent; color: #86868b; padding: 0; font-weight: 600; letter-spacing: 0.02em; text-transform: none; font-size: 13px; }
+.b-nav { background: transparent; padding: 0; gap: 26px; }
+.b-nav a { padding: 6px 0; border-radius: 0; color: #86868b; font-weight: 500; }
+.b-nav a:hover { color: #1d1d1f; }
+.b-nav a.aktiv { background: transparent; box-shadow: none; color: #1d1d1f; font-weight: 600; }
+.b-main { padding: 20px 32px 64px; }
+.b-unsichtbar { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- Kopf der Wochenübersicht ---------- */
+.w-seite { gap: 22px; }
+.w-kopf { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; }
+.w-kw { font-size: 13px; color: #86868b; }
+.b-app h1.w-titel { margin: 4px 0 0; font-size: 40px; font-weight: 700; letter-spacing: -0.03em; }
+.w-steuerung { display: flex; align-items: center; gap: 4px; }
+.w-rund {
+  width: 44px; height: 44px; border: none; border-radius: 22px; background: transparent; color: #1d1d1f;
+  font: inherit; font-size: 22px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.w-rund:hover:not(:disabled) { background: #e8e8ed; }
+.w-rund:disabled { opacity: 0.5; cursor: default; }
+.w-textknopf { border: none; background: transparent; color: #0062c4; font: inherit; font-size: 15px; padding: 10px 12px; border-radius: 10px; cursor: pointer; }
+.w-textknopf:hover { background: #e8e8ed; }
+.w-textknopf.klein { font-size: 13px; padding: 4px 8px; }
+.w-datum input {
+  height: 40px; border: none; border-radius: 12px; background: transparent; padding: 0 8px; font: inherit; font-size: 14px; color: #6e6e73; cursor: pointer;
+}
+.w-datum input:hover, .w-datum input:focus { background: #e8e8ed; outline: none; color: #1d1d1f; }
+.w-dreht { display: inline-block; animation: w-dreh 0.9s linear infinite; }
+@keyframes w-dreh { to { transform: rotate(360deg); } }
+
+.w-hinweis { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; }
+.w-dot { width: 8px; height: 8px; border-radius: 4px; flex: none; display: inline-block; }
+.w-dot.orange { background: #e8860c; }
+.w-dot.gruen { background: #1e7a3a; }
+
+/* ---------- Gitter mit Bahnen ---------- */
+.w-scroll { overflow-x: auto; padding-bottom: 6px; transition: opacity 0.15s; }
+.w-scroll.laedt { opacity: 0.55; }
+.w-gitter { display: grid; column-gap: 10px; row-gap: 0; min-width: min-content; }
+
+.w-bahn { background: var(--bahn); padding: 5px 6px; display: flex; flex-direction: column; }
+.w-bahn.kopf {
+  border-radius: 18px 18px 0 0; padding: 16px 12px 10px; flex-direction: row; align-items: center; gap: 6px;
+  color: var(--bahn-text); cursor: grab; user-select: none; transition: box-shadow 0.1s, opacity 0.1s;
+}
+.w-bahn.kopf:focus-visible { outline: 2px solid #0062c4; outline-offset: -2px; }
+.w-bahn.kopf.wird-gezogen { opacity: 0.4; }
+.w-bahn.kopf.ziel-vor { box-shadow: inset 3px 0 0 #0062c4; }
+.w-bahn.kopf.ziel-nach { box-shadow: inset -3px 0 0 #0062c4; }
+.w-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; }
+.w-aus {
+  border: none; background: transparent; color: inherit; width: 26px; height: 26px; border-radius: 13px;
+  font-size: 17px; line-height: 1; cursor: pointer; opacity: 0; transition: opacity 0.1s;
+}
+.w-bahn.kopf:hover .w-aus, .w-aus:focus-visible { opacity: 0.55; }
+.w-aus:hover { opacity: 1 !important; background: rgba(255, 255, 255, 0.7); }
+.w-bahn.fuss { border-radius: 0 0 18px 18px; padding: 14px 12px 16px; gap: 2px; color: var(--bahn-text); }
+
+.w-tag { padding: 19px 0 0; display: flex; flex-direction: column; gap: 2px; }
+.w-tag-wt { font-size: 15px; font-weight: 600; }
+.w-tag-datum { font-size: 12px; color: #86868b; }
+.w-tag.summe { font-size: 13px; color: #86868b; padding-top: 24px; }
+
+/* ---------- Kachel ---------- */
+.w-kachel {
+  all: unset; box-sizing: border-box; flex: 1 1 auto; min-height: 128px; border-radius: 16px; padding: 13px 14px 12px;
+  background: #fff; display: flex; flex-direction: column; gap: 9px; cursor: pointer; color: #1d1d1f;
+  font-family: inherit; transition: box-shadow 0.12s, transform 0.12s;
+}
+.w-kachel:hover { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07); }
+.w-kachel:focus-visible { box-shadow: 0 0 0 2px #0062c4; }
+.w-kachel.warnung { box-shadow: 0 0 0 2px #f0b35a; }
+.w-kachel.aktiv { box-shadow: 0 0 0 2px #0062c4; }
+.w-kachel.leer { background: transparent; cursor: default; align-items: center; justify-content: center; font-size: 13px; color: #c0392b; }
+.w-kachel.leer:hover { box-shadow: none; }
+.w-kachel.leer.fehlt { box-shadow: inset 0 0 0 1px #f2c9c4; }
+.w-kachel.sonder { background: rgba(255, 255, 255, 0.55); align-items: center; justify-content: center; }
+.w-sonder-wort { font-size: 14px; color: #86868b; }
+.w-zeit { font-size: 12px; color: #86868b; font-variant-numeric: tabular-nums; }
+.w-projekte { display: flex; flex-direction: column; gap: 5px; }
+.w-projekt { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.w-punkt { width: 8px; height: 8px; border-radius: 4px; flex: none; }
+.w-projekt-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.w-std { font-weight: 600; font-variant-numeric: tabular-nums; }
+.w-std.abweichend { color: #c25e00; }
+.w-summe { margin-top: auto; display: flex; justify-content: flex-end; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
+.w-summe-zahl { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+.w-saldo { font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.w-saldo.gross { font-size: 15px; }
+.w-saldo.plus { color: #1e7a3a; }
+.w-saldo.minus { color: #a35200; }
+
+.w-wochen-zahl { display: flex; align-items: baseline; gap: 6px; font-size: 28px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.w-einheit { font-size: 16px; margin-left: -3px; }
+.w-wochen-notiz { font-size: 12px; color: #6e6e73; }
+
+/* ---------- Detailfenster ---------- */
+.w-schleier { position: fixed; inset: 0; background: rgba(29, 29, 31, 0.18); z-index: 90; }
+.w-detail {
+  position: fixed; top: 20px; right: 20px; bottom: 20px; width: 400px; max-width: calc(100% - 40px); z-index: 91;
+  background: #fff; border-radius: 22px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18); padding: 26px;
+  display: flex; flex-direction: column; gap: 22px; overflow-y: auto; box-sizing: border-box;
+}
+.w-detail-kopf { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.w-detail-kopf .w-rund { background: #f2f2f5; width: 36px; height: 36px; font-size: 18px; }
+.w-detail-datum { font-size: 13px; color: #86868b; }
+.b-app .w-detail h2 { margin: 4px 0 0; font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+.w-detail-hinweise { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.w-detail-hinweise li { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; line-height: 1.45; }
+.w-detail-hinweise .w-dot { margin-top: 6px; }
+.w-detail-block { display: flex; flex-direction: column; gap: 8px; }
+.w-label { font-size: 13px; color: #86868b; }
+.w-detail-wert { font-size: 16px; font-variant-numeric: tabular-nums; }
+.w-detail-projekt { display: flex; align-items: flex-start; gap: 10px; font-size: 15px; }
+.w-detail-projekt .w-punkt { margin-top: 6px; }
+.w-notiz { display: block; font-size: 13px; color: #6e6e73; margin-top: 2px; }
+.w-detail-aktionen { margin-top: auto; display: flex; flex-direction: column; gap: 6px; }
+.w-grund { margin: 0 0 6px; font-size: 13px; color: #6e6e73; line-height: 1.45; }
+.w-haupt { height: 50px; border: none; border-radius: 14px; background: #0062c4; color: #fff; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer; }
+.w-haupt:hover { background: #0052a8; }
+.w-link { text-align: center; font-size: 14px; text-decoration: none; padding: 10px; border-radius: 10px; }
+.w-link:hover { background: #f2f2f5; }
+
+/* ---------- Monat & übrige Seiten im reduzierten Stil ---------- */
+.w-select {
+  height: 40px; border: none; border-radius: 12px; background: transparent; padding: 0 6px; font: inherit; font-size: 16px;
+  font-weight: 600; color: #1d1d1f; cursor: pointer;
+}
+.w-select:hover, .w-select:focus { background: #e8e8ed; outline: none; }
+.w-textknopf:disabled { opacity: 0.4; cursor: default; }
+.b-tabelle-scroll { box-shadow: none; border-radius: 20px; }
+.b-tabelle th { text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500; color: #86868b; border-bottom-color: #ececf0; }
+.b-tabelle td { border-top-color: #f0f0f3; }
+.b-tabelle td.r { font-size: 16px; }
+.b-tabelle .m-hervor { background: #fafafc; }
+.b-tabelle td.m-hervor { font-size: 19px; }
+.m-name { display: inline-block; padding: 5px 11px; border-radius: 9px; font-weight: 600; }
+.m-pruefung { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #6e6e73; white-space: nowrap; }
+.b-legende { color: #86868b; }
+
+.b-ueberzeile { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 13px; color: #86868b; }
+.b-app h1 { font-size: 34px; letter-spacing: -0.03em; }
+.b-karte, .b-ma-karte { box-shadow: none; }
+.b-btn { border-color: #dcdce1; }
+.b-btn.b-btn-leise { border-color: transparent; background: transparent; }

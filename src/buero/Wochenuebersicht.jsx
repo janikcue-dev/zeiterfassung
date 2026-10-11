@@ -1,107 +1,164 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useDaten } from "./api.js";
 import {
-  addTage, baueWoche, baustellenFarbe, datumKurz, farbeVon, fmtSaldo, fmtStd, heuteStr,
-  kalenderwoche, montagVon, normName, WOCHENTAGE_KURZ,
+  addTage, baueWoche, baustellenFarbe, farbeVon, fmtSaldo, fmtStd, heuteStr,
+  kalenderwoche, MONATSNAMEN, montagVon, normName, WOCHENTAGE_KURZ,
 } from "./logik.js";
 import { AUSGEBLENDETE_MITARBEITER } from "./einstellungen.js";
 import { fuehreZusammen, useAnordnung, useZiehen, verschiebe } from "./anordnung.js";
-import Griff from "./Griff.jsx";
 import KorrekturDialog from "./KorrekturDialog.jsx";
 
-function WarnIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3 2 20h20L12 3z" />
-      <path d="M12 10v4" />
-      <path d="M12 17h.01" />
-    </svg>
-  );
+// Wochenübersicht – reduziertes Design:
+// jeder Mitarbeiter hat eine zarte farbige Bahn, die Kacheln liegen weiß darauf.
+// Farbe nur dort, wo sie etwas bedeutet: Bahn = Person, Punkt = Baustelle, Orange = hinschauen.
+
+const WOCHENTAGE_LANG = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+
+function titelWoche(montag, sonntag) {
+  const [, m1, t1] = montag.split("-").map(Number);
+  const [, m2, t2] = sonntag.split("-").map(Number);
+  return m1 === m2 ? `${t1}. – ${t2}. ${MONATSNAMEN[m2 - 1]}` : `${t1}. ${MONATSNAMEN[m1 - 1]} – ${t2}. ${MONATSNAMEN[m2 - 1]}`;
 }
 
-function SaldoText({ wert, gross }) {
-  const klasse = wert > 0.004 ? "plus" : wert < -0.004 ? "minus" : "null";
-  return <span className={`b-saldo b-saldo-${klasse}${gross ? " gross" : ""}`}>{fmtSaldo(wert)}</span>;
+function Saldo({ wert, gross }) {
+  if (Math.abs(wert || 0) < 0.005) return null;
+  return <span className={`w-saldo ${wert > 0 ? "plus" : "minus"}${gross ? " gross" : ""}`}>{fmtSaldo(wert)}</span>;
 }
 
-function SonderBadge({ eintrag }) {
-  const stunden = eintrag.gesamt > 0 && eintrag.status !== "Urlaub" ? ` · ${fmtStd(eintrag.gesamt)} h` : "";
-  return <span className="b-badge-sonder">{eintrag.status}{stunden}</span>;
+const bahnStil = (f) => ({ "--bahn": `${f.akzent}17`, "--bahn-text": f.fg });
+
+function zeitText(tag) {
+  if (!tag.beginn || !tag.ende) return "ohne Uhrzeit";
+  return `${tag.beginn}–${tag.ende}${tag.pause !== null ? ` · ${tag.pause}′` : ""}`;
 }
 
-function Kachel({ z, farbe, onKorrektur }) {
+function sonderText(s) {
+  return s.gesamt > 0 && s.status !== "Urlaub" ? `${s.status} · ${fmtStd(s.gesamt)} h` : s.status;
+}
+
+function Kachel({ z, onOeffnen, aktiv }) {
   if (z.leer) {
-    return (
-      <div className={`b-kachel b-kachel-leer${z.fehlt ? " fehlt" : ""}`}>
-        {z.fehlt ? "Kein Eintrag" : ""}
-      </div>
-    );
+    return <div className={`w-kachel leer${z.fehlt ? " fehlt" : ""}`}>{z.fehlt ? "fehlt" : ""}</div>;
   }
 
-  const tag = z.normal[0];
-  const warnung = z.warnungen.length > 0;
-  const link = tag?.url || z.sonder[0]?.url || z.projekte[0]?.url;
+  const nurSonder = z.normal.length === 0 && z.projekte.length === 0;
+  const klassen = ["w-kachel", nurSonder && "sonder", z.warnungen.length && "warnung", aktiv && "aktiv"].filter(Boolean).join(" ");
 
   return (
-    <div className={`b-kachel${warnung ? " warnung" : ""}`} style={{ borderTopColor: farbe.akzent }}>
-      {z.sonder.length > 0 && (
-        <div className="b-kachel-sonder">
-          {z.sonder.map((s) => <SonderBadge key={s.id} eintrag={s} />)}
-        </div>
-      )}
-
-      {z.normal.length > 0 && (
-        <div className="b-kachel-zeit">
-          <span className="b-zahl">{tag.beginn && tag.ende ? `${tag.beginn} – ${tag.ende}` : "ohne Uhrzeit"}</span>
-          {tag.pause !== null && tag.beginn && <span className="b-sek">Pause {tag.pause} min</span>}
-        </div>
-      )}
-
-      {z.projekte.length > 0 && (
-        <ol className="b-projekte">
-          {z.projekte.map((p, i) => (
-            <li key={p.id} className={z.abweichendeBaustellen.has(normName(p.name)) ? "abweichend" : ""} title={p.notiz || undefined}>
-              <span className="b-nr">{p.reihenfolge ?? i + 1}.</span>
-              <span className="b-quadrat" style={{ background: baustellenFarbe(p.name) }} />
-              <span className="b-projekt-name">{p.name || "(ohne Namen)"}</span>
-              <span className="b-zahl b-fett">{fmtStd(p.stunden)} h</span>
-            </li>
-          ))}
-        </ol>
-      )}
-
-      {warnung && (
-        <ul className="b-warnungen">
-          {z.warnungen.map((w, i) => (
-            <li key={i}><WarnIcon /> {w.text}</li>
-          ))}
-        </ul>
-      )}
-
-      {z.normal.length > 0 && (
-        <div className="b-kachel-fuss">
-          <span className="b-sek">Gesamt</span>
-          <span className="b-zahl b-fett">
-            {fmtStd(z.gearbeitet)} h <SaldoText wert={z.saldo} />
+    <button className={klassen} onClick={onOeffnen}>
+      {nurSonder ? (
+        z.sonder.map((s) => <span key={s.id} className="w-sonder-wort">{sonderText(s)}</span>)
+      ) : (
+        <>
+          {z.normal.length > 0 && <span className="w-zeit">{zeitText(z.normal[0])}</span>}
+          {z.sonder.map((s) => <span key={s.id} className="w-zeit">{sonderText(s)}</span>)}
+          <span className="w-projekte">
+            {z.projekte.map((p) => (
+              <span key={p.id} className="w-projekt">
+                <span className="w-punkt" style={{ background: baustellenFarbe(p.name) }} />
+                <span className="w-projekt-name">{p.name || "(ohne Namen)"}</span>
+                <span className={`w-std${z.abweichendeBaustellen.has(normName(p.name)) ? " abweichend" : ""}`}>{fmtStd(p.stunden)}</span>
+              </span>
+            ))}
           </span>
-        </div>
+          {z.normal.length > 0 && (
+            <span className="w-summe">
+              <span className="w-summe-zahl">{fmtStd(z.gearbeitet)}</span>
+              <Saldo wert={z.saldo} />
+            </span>
+          )}
+        </>
       )}
-
-      <div className="b-kachel-aktionen">
-        {z.korrigierbar && <button className="b-btn-klein" onClick={onKorrektur}>Korrigieren</button>}
-        {link && <a className="b-btn-klein leise" href={link} target="_blank" rel="noreferrer">In Notion</a>}
-      </div>
-    </div>
+    </button>
   );
 }
 
-function SonderZusammenfassung({ sonder }) {
-  const teile = Object.entries(sonder).map(([status, n]) => `${n}× ${status}`);
-  return teile.length ? <span className="b-sek klein">{teile.join(" · ")}</span> : <span className="b-sek klein">Soll 40 h</span>;
+// Seitenfenster mit Details zu einer Kachel – hier liegen die Aktionen
+function Detail({ auswahl, onSchliessen, onKorrektur }) {
+  const { z, mitarbeiter, datum } = auswahl;
+  const tag = z.normal[0];
+  const notionLinks = [
+    ...z.normal.map((a) => ({ url: a.url, text: "Arbeitstag in Notion" })),
+    ...z.sonder.map((a) => ({ url: a.url, text: `${a.status} in Notion` })),
+  ];
+
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onSchliessen();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onSchliessen]);
+
+  const wt = WOCHENTAGE_LANG[new Date(datum + "T12:00:00").getDay()];
+  const [, m, t] = datum.split("-").map(Number);
+
+  let grund = "";
+  if (!z.korrigierbar && z.normal.length > 1) grund = "Für diesen Tag gibt es zwei Arbeitstag-Einträge – bitte zuerst in Notion bereinigen.";
+  else if (!z.korrigierbar && tag && !tag.beginn) grund = "Teilweise krank: diesen Tag bitte direkt in Notion korrigieren.";
+  else if (!z.korrigierbar && z.projekte.length === 0 && tag) grund = "Keine Projekte eingetragen – bitte in Notion ergänzen.";
+
+  return (
+    <>
+      <div className="w-schleier" onClick={onSchliessen} />
+      <aside className="w-detail" role="dialog" aria-modal="true" aria-labelledby="w-detail-titel">
+        <div className="w-detail-kopf">
+          <div>
+            <div className="w-detail-datum">{wt}, {t}. {MONATSNAMEN[m - 1]}</div>
+            <h2 id="w-detail-titel">{mitarbeiter}</h2>
+          </div>
+          <button className="w-rund" onClick={onSchliessen} aria-label="Schließen">×</button>
+        </div>
+
+        {z.warnungen.length > 0 && (
+          <ul className="w-detail-hinweise">
+            {z.warnungen.map((w, i) => <li key={i}><span className="w-dot orange" />{w.text}</li>)}
+          </ul>
+        )}
+
+        {tag && (
+          <div className="w-detail-block">
+            <span className="w-label">Arbeitszeit</span>
+            <span className="w-detail-wert">
+              {zeitText(tag)} · {fmtStd(z.gearbeitet)} h <Saldo wert={z.saldo} />
+            </span>
+          </div>
+        )}
+        {z.sonder.length > 0 && (
+          <div className="w-detail-block">
+            <span className="w-label">Abwesenheit</span>
+            {z.sonder.map((s) => <span key={s.id} className="w-detail-wert">{sonderText(s)}</span>)}
+          </div>
+        )}
+        {z.projekte.length > 0 && (
+          <div className="w-detail-block">
+            <span className="w-label">Baustellen</span>
+            {z.projekte.map((p) => (
+              <div key={p.id} className="w-detail-projekt">
+                <span className="w-punkt" style={{ background: baustellenFarbe(p.name) }} />
+                <span className="w-projekt-name">
+                  {p.name}
+                  {p.notiz && <span className="w-notiz">{p.notiz}</span>}
+                </span>
+                <span className={`w-std${z.abweichendeBaustellen.has(normName(p.name)) ? " abweichend" : ""}`}>{fmtStd(p.stunden)} h</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="w-detail-aktionen">
+          {grund && <p className="w-grund">{grund}</p>}
+          {z.korrigierbar && <button className="w-haupt" onClick={onKorrektur}>Korrigieren</button>}
+          {notionLinks.map((l) => (
+            <a key={l.url} className="w-link" href={l.url} target="_blank" rel="noreferrer">{l.text} öffnen</a>
+          ))}
+        </div>
+      </aside>
+    </>
+  );
 }
 
 export default function Wochenuebersicht({ api }) {
   const [montag, setMontag] = useState(() => montagVon(heuteStr()));
+  const [auswahl, setAuswahl] = useState(null);
   const [korrektur, setKorrektur] = useState(null);
   const anordnung = useAnordnung();
   const sonntag = addTage(montag, 6);
@@ -132,57 +189,49 @@ export default function Wochenuebersicht({ api }) {
   const ausblenden = (name) => speichere(anordnung.reihenfolge, [...anordnung.eigeneAusgeblendet, name]);
   const einblenden = (name) => speichere(anordnung.reihenfolge, anordnung.eigeneAusgeblendet.filter((n) => n !== name));
 
+  // Ein Satz statt Chip-Leiste
+  let hinweis = null;
+  if (woche) {
+    const teile = [];
+    if (woche.warnungen) teile.push(`${woche.warnungen} ${woche.warnungen === 1 ? "Tag braucht" : "Tage brauchen"} deinen Blick`);
+    if (woche.fehlend) teile.push(`${woche.fehlend} ${woche.fehlend === 1 ? "Eintrag fehlt" : "Einträge fehlen"}`);
+    if (woche.ausgeblendetMitEintrag.length) teile.push(`ausgeblendet, aber mit Einträgen: ${woche.ausgeblendetMitEintrag.join(", ")}`);
+    hinweis = { ok: teile.length === 0, text: teile.length ? teile.join(" · ") : "Alles stimmig" };
+  }
+
   return (
-    <section className="b-seite">
-      <div className="b-kopf">
+    <section className="b-seite w-seite">
+      <div className="w-kopf">
         <div>
-          <div className="b-ueberzeile">Wochenübersicht · KW {kalenderwoche(montag)}</div>
-          <h1>{datumKurz(montag)} – {datumKurz(sonntag)}{sonntag.slice(0, 4)}</h1>
+          <div className="w-kw">KW {kalenderwoche(montag)} · {sonntag.slice(0, 4)}</div>
+          <h1 className="w-titel">{titelWoche(montag, sonntag)}</h1>
         </div>
-        <div className="b-knopfreihe">
-          <button className="b-btn b-btn-icon" aria-label="Vorherige Woche" onClick={() => setMontag(addTage(montag, -7))}>‹</button>
-          <button className="b-btn" onClick={() => setMontag(montagVon(heuteStr()))}>Diese Woche</button>
-          <button className="b-btn b-btn-icon" aria-label="Nächste Woche" onClick={() => setMontag(addTage(montag, 7))}>›</button>
-          <label className="b-springen">
-            <span>Woche wählen</span>
-            <input
-              type="date"
-              value={montag}
-              onChange={(e) => e.target.value && setMontag(montagVon(e.target.value))}
-              aria-label="Zu einer Woche springen: beliebigen Tag der Woche wählen"
-            />
+        <div className="w-steuerung">
+          <button className="w-rund" aria-label="Vorherige Woche" onClick={() => setMontag(addTage(montag, -7))}>‹</button>
+          <button className="w-textknopf" onClick={() => setMontag(montagVon(heuteStr()))}>Heute</button>
+          <button className="w-rund" aria-label="Nächste Woche" onClick={() => setMontag(addTage(montag, 7))}>›</button>
+          <label className="w-datum" title="Zu einer Woche springen">
+            <span className="b-unsichtbar">Zu einer Woche springen</span>
+            <input type="date" value={montag} onChange={(e) => e.target.value && setMontag(montagVon(e.target.value))} />
           </label>
-          <button className="b-btn" onClick={neuLaden} disabled={laedt}>{laedt ? "Lädt…" : "↻ Aktualisieren"}</button>
+          <button className="w-rund" aria-label="Aktualisieren" title="Aktualisieren" onClick={neuLaden} disabled={laedt}>
+            <span className={laedt ? "w-dreht" : ""}>↻</span>
+          </button>
         </div>
       </div>
 
       {fehler && <div className="b-fehler">{fehler}</div>}
 
-      {woche && (
-        <div className="b-hinweisleiste">
-          {woche.warnungen > 0 ? (
-            <span className="b-chip warnung"><WarnIcon /> {woche.warnungen} {woche.warnungen === 1 ? "Kachel" : "Kacheln"} mit Hinweis</span>
-          ) : (
-            <span className="b-chip ok">Keine Abweichungen</span>
-          )}
-          {woche.fehlend > 0 && <span className="b-chip grau">{woche.fehlend} fehlende {woche.fehlend === 1 ? "Eintrag" : "Einträge"}</span>}
-          {woche.ausgeblendetMitEintrag.length > 0 && (
-            <span className="b-chip warnung">Ausgeblendet, aber mit Einträgen: {woche.ausgeblendetMitEintrag.join(", ")}</span>
-          )}
-          {anordnung.eigeneAusgeblendet.length > 0 && (
-            <span className="b-ausgeblendet">
-              <span className="b-sek klein">Ausgeblendet:</span>
-              {anordnung.eigeneAusgeblendet.map((n) => (
-                <button key={n} className="b-chip grau b-chip-knopf" onClick={() => einblenden(n)} title={`${n} wieder anzeigen`}>
-                  {n} ↺
-                </button>
-              ))}
-            </span>
-          )}
+      {hinweis && (
+        <div className="w-hinweis">
+          <span className={`w-dot ${hinweis.ok ? "gruen" : "orange"}`} />
+          <span>{hinweis.text}</span>
+          <span className="b-wachsen" />
+          {anordnung.eigeneAusgeblendet.map((n) => (
+            <button key={n} className="w-textknopf klein" onClick={() => einblenden(n)} title={`${n} wieder anzeigen`}>{n} einblenden</button>
+          ))}
           {anordnung.reihenfolge.length > 0 && (
-            <button className="b-btn-klein leise" onClick={() => speichere([], anordnung.eigeneAusgeblendet)}>
-              Reihenfolge wie in Notion
-            </button>
+            <button className="w-textknopf klein" onClick={() => speichere([], anordnung.eigeneAusgeblendet)}>Reihenfolge wie in Notion</button>
           )}
         </div>
       )}
@@ -190,31 +239,16 @@ export default function Wochenuebersicht({ api }) {
       {!woche && !fehler && <div className="b-laden">Daten werden aus Notion geladen…</div>}
 
       {woche && (
-        <div className={`b-gitter-scroll${laedt ? " laedt" : ""}`}>
-          <div className="b-gitter" style={{ gridTemplateColumns: `76px repeat(${spalten}, minmax(210px, 1fr))` }}>
+        <div className={`w-scroll${laedt ? " laedt" : ""}`}>
+          <div className="w-gitter" style={{ gridTemplateColumns: `64px repeat(${spalten}, minmax(196px, 1fr))` }}>
             <div />
             {woche.mitarbeiter.map((m) => {
               const f = farbeVon(m.farbe);
               return (
-                <div
-                  key={m.name}
-                  className={`b-spaltenkopf${ziehen.klasse(m.name)}`}
-                  style={{ background: f.bg, color: f.fg }}
-                  {...ziehen.props(m.name)}
-                >
-                  <Griff />
-                  <span className="b-punkt" style={{ background: f.akzent }} />
-                  <span className="b-wachsen">{m.name}</span>
+                <div key={m.name} className={`w-bahn kopf${ziehen.klasse(m.name)}`} style={bahnStil(f)} {...ziehen.props(m.name)}>
+                  <span className="w-name">{m.name}</span>
                   {!fest.has(m.name) && (
-                    <button
-                      className="b-kopf-aus"
-                      draggable={false}
-                      aria-label={`${m.name} ausblenden`}
-                      title="In der Wochenübersicht ausblenden"
-                      onClick={() => ausblenden(m.name)}
-                    >
-                      ×
-                    </button>
+                    <button className="w-aus" draggable={false} aria-label={`${m.name} ausblenden`} title="Ausblenden" onClick={() => ausblenden(m.name)}>×</button>
                   )}
                 </div>
               );
@@ -222,35 +256,39 @@ export default function Wochenuebersicht({ api }) {
 
             {woche.zeilen.map((zeile) => {
               const wt = new Date(zeile.datum + "T12:00:00").getDay();
+              const [, mo, ta] = zeile.datum.split("-").map(Number);
               return [
-                <div key={zeile.datum} className="b-tagkopf">
-                  <div className="b-tagkopf-wt">{WOCHENTAGE_KURZ[wt]}</div>
-                  <div className="b-sek">{datumKurz(zeile.datum)}</div>
+                <div key={zeile.datum} className="w-tag">
+                  <span className="w-tag-wt">{WOCHENTAGE_KURZ[wt]}</span>
+                  <span className="w-tag-datum">{ta}.{mo}.</span>
                 </div>,
                 ...zeile.zellen.map((z, i) => {
                   const m = woche.mitarbeiter[i];
+                  const key = `${zeile.datum}-${m.name}`;
                   return (
-                    <Kachel
-                      key={`${zeile.datum}-${m.name}`}
-                      z={z}
-                      farbe={farbeVon(m.farbe)}
-                      onKorrektur={() => setKorrektur({ z, mitarbeiter: m.name, datum: zeile.datum })}
-                    />
+                    <div key={key} className="w-bahn" style={bahnStil(farbeVon(m.farbe))}>
+                      <Kachel
+                        z={z}
+                        aktiv={auswahl?.key === key}
+                        onOeffnen={() => setAuswahl({ key, z, mitarbeiter: m.name, datum: zeile.datum })}
+                      />
+                    </div>
                   );
                 }),
               ];
             })}
 
-            <div className="b-tagkopf b-tagkopf-summe">Woche</div>
+            <div className="w-tag summe">Woche</div>
             {woche.summen.map((s, i) => {
-              const f = farbeVon(woche.mitarbeiter[i].farbe);
+              const m = woche.mitarbeiter[i];
+              const teile = Object.entries(s.sonder).map(([status, n]) => `${n}× ${status}`);
               return (
-                <div key={woche.mitarbeiter[i].name} className="b-summe" style={{ background: f.bg }}>
-                  <div className="b-summe-zahl">
-                    <span className="b-zahl">{fmtStd(s.gearbeitet)} h</span>
-                    <SaldoText wert={s.saldo} gross />
-                  </div>
-                  <SonderZusammenfassung sonder={s.sonder} />
+                <div key={m.name} className="w-bahn fuss" style={bahnStil(farbeVon(m.farbe))}>
+                  <span className="w-wochen-zahl">
+                    {fmtStd(s.gearbeitet)}<span className="w-einheit">h</span>
+                    <Saldo wert={s.saldo} gross />
+                  </span>
+                  <span className="w-wochen-notiz">{teile.length ? teile.join(" · ") : "Soll 40 h"}</span>
                 </div>
               );
             })}
@@ -258,11 +296,16 @@ export default function Wochenuebersicht({ api }) {
         </div>
       )}
 
-      <p className="b-legende b-sek">
-        Gesamt = gearbeitete Stunden · Plus/Minus = Über-/Minusstunden aus Notion (Soll Mo–Do 8,5 h, Fr 6 h) ·
-        Orange = gleiche Baustelle mit bis zu 1 h Unterschied zwischen Kollegen, Projektsumme passt nicht oder doppelter Eintrag ·
-        Reihenfolge ändern: Namen oben festhalten und nach links oder rechts ziehen (gilt auch für den Monatsabschluss).
-      </p>
+      {auswahl && (
+        <Detail
+          auswahl={auswahl}
+          onSchliessen={() => setAuswahl(null)}
+          onKorrektur={() => {
+            setKorrektur(auswahl);
+            setAuswahl(null);
+          }}
+        />
+      )}
 
       {korrektur && (
         <KorrekturDialog

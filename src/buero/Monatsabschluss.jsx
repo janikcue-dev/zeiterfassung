@@ -47,11 +47,12 @@ function Pruefung({ r }) {
   if (r.tageMitWarnung) punkte.push(`${r.tageMitWarnung} ${r.tageMitWarnung === 1 ? "Tag" : "Tage"} mit Hinweis`);
   if (r.fehlendeTage) punkte.push(`${r.fehlendeTage} ohne Eintrag`);
   if (r.summenAbweichung) punkte.push(`Projekte ≠ Arbeitstage (${fmtStd(r.summenAbweichung)} h)`);
-  if (!punkte.length) return <span className="b-chip ok">Stimmig</span>;
+  // Ein Punkt statt Chip-Stapel: grün = stimmig, orange = hinschauen (Details beim Darüberfahren)
   return (
-    <div className="b-chipspalte">
-      {punkte.map((p) => <span key={p} className="b-chip warnung">{p}</span>)}
-    </div>
+    <span className="m-pruefung" title={punkte.join(" · ") || "Alles stimmig"}>
+      <span className={`w-dot ${punkte.length ? "orange" : "gruen"}`} />
+      <span className="m-pruefung-text">{punkte.length ? punkte[0] + (punkte.length > 1 ? ` +${punkte.length - 1}` : "") : "stimmig"}</span>
+    </span>
   );
 }
 
@@ -98,15 +99,15 @@ export default function Monatsabschluss({ api }) {
 
   return (
     <section className="b-seite">
-      <div className="b-kopf">
+      <div className="w-kopf">
         <div>
-          <div className="b-ueberzeile">Monatsabschluss</div>
-          <h1>{titel}</h1>
+          <div className="w-kw">Monatsabschluss</div>
+          <h1 className="w-titel">{titel}</h1>
         </div>
-        <div className="b-knopfreihe nicht-drucken">
-          <button className="b-btn b-btn-icon" aria-label="Vorheriger Monat" onClick={() => blaettern(-1)}>‹</button>
+        <div className="w-steuerung nicht-drucken">
+          <button className="w-rund" aria-label="Vorheriger Monat" onClick={() => blaettern(-1)}>‹</button>
           <select
-            className="b-auswahl"
+            className="w-select"
             aria-label="Monat"
             value={auswahl.monat}
             onChange={(e) => setAuswahl((a) => ({ ...a, monat: Number(e.target.value) }))}
@@ -114,26 +115,29 @@ export default function Monatsabschluss({ api }) {
             {MONATSNAMEN.map((n, i) => <option key={n} value={i}>{n}</option>)}
           </select>
           <select
-            className="b-auswahl"
+            className="w-select"
             aria-label="Jahr"
             value={auswahl.jahr}
             onChange={(e) => setAuswahl((a) => ({ ...a, jahr: Number(e.target.value) }))}
           >
             {[...new Set([...JAHRE, auswahl.jahr])].sort().map((j) => <option key={j} value={j}>{j}</option>)}
           </select>
-          <button className="b-btn b-btn-icon" aria-label="Nächster Monat" onClick={() => blaettern(1)}>›</button>
-          <button className="b-btn" onClick={neuLaden} disabled={laedt}>{laedt ? "Lädt…" : "↻ Aktualisieren"}</button>
-          <button className="b-btn" onClick={csvLaden} disabled={!monat}>CSV (Excel)</button>
-          <button className="b-btn b-btn-primaer" onClick={() => window.print()} disabled={!monat}>Drucken / PDF</button>
+          <button className="w-rund" aria-label="Nächster Monat" onClick={() => blaettern(1)}>›</button>
+          <button className="w-rund" aria-label="Aktualisieren" title="Aktualisieren" onClick={neuLaden} disabled={laedt}>
+            <span className={laedt ? "w-dreht" : ""}>↻</span>
+          </button>
+          <button className="w-textknopf" onClick={csvLaden} disabled={!monat}>CSV</button>
+          <button className="w-textknopf" onClick={() => window.print()} disabled={!monat}>Drucken</button>
         </div>
       </div>
 
       {fehler && <div className="b-fehler">{fehler}</div>}
       {!monat && !fehler && <div className="b-laden">Daten werden aus Notion geladen…</div>}
 
-      {monat && offen > 0 && (
-        <div className="b-banner warnung">
-          <b>Bei {offen} {offen === 1 ? "Mitarbeiter" : "Mitarbeitern"} gibt es offene Punkte</b> – vor dem Abschluss in der Wochenübersicht prüfen.
+      {monat && monat.zeilen.length > 0 && (
+        <div className="w-hinweis nicht-drucken">
+          <span className={`w-dot ${offen ? "orange" : "gruen"}`} />
+          <span>{offen ? `Bei ${offen} ${offen === 1 ? "Mitarbeiter" : "Mitarbeitern"} vor dem Abschluss noch hinschauen` : "Alles stimmig – bereit zum Abschluss"}</span>
         </div>
       )}
 
@@ -149,7 +153,7 @@ export default function Monatsabschluss({ api }) {
                   <th className="r">Minus-<br />stunden</th>
                   <th className="r">In regulärer<br />Zeit</th>
                   <th className="r">Regulär nach<br />Auffüllen</th>
-                  <th className="r">Verbleibende<br />Plusstunden</th>
+                  <th className="r m-hervor">Verbleibende<br />Plusstunden</th>
                   <th>Abwesenheit (Tage)</th>
                   <th className="nicht-drucken">Prüfung</th>
                 </tr>
@@ -164,14 +168,14 @@ export default function Monatsabschluss({ api }) {
                     <tr key={r.mitarbeiter.name} className={`b-ziehzeile${ziehen.klasse(r.mitarbeiter.name)}`} {...ziehen.props(r.mitarbeiter.name)}>
                       <td>
                         <span className="b-zeilengriff nicht-drucken"><Griff /></span>
-                        <span className="b-name-chip" style={{ background: f.bg, color: f.fg }}>{r.mitarbeiter.name}</span>
+                        <span className="m-name" style={{ background: `${f.akzent}1f`, color: f.fg }}>{r.mitarbeiter.name}</span>
                       </td>
                       <td className="r"><Std wert={r.gesamt} betont /></td>
                       <td className="r"><Vorzeichen wert={r.ueberBrutto} art="plus" /></td>
                       <td className="r"><Vorzeichen wert={r.minus} art="minus" /></td>
                       <td className="r"><Std wert={r.inRegulaer} /></td>
                       <td className="r"><Std wert={r.regulaerNachAuffuellen} /></td>
-                      <td className="r">
+                      <td className="r m-hervor">
                         <Vorzeichen wert={r.verbleibendPlus} art="plus" betont />
                         {r.nichtAusgeglichen > 0 && (
                           <div className="b-saldo-minus klein">−{fmtStd(r.nichtAusgeglichen)} nicht ausgeglichen</div>

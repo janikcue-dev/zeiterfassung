@@ -74,7 +74,7 @@ function MitarbeiterKarte({ m, beschaeftigt, ausfuehren }) {
 
       <div className="b-ma-aktionen">
         {!z && (
-          <button className="b-btn b-btn-primaer" disabled={busy} onClick={() => ausfuehren(m.name, "zugangErneuern", { name: m.name })}>
+          <button className="b-btn" disabled={busy} onClick={() => ausfuehren(m.name, "zugangErneuern", { name: m.name })}>
             {busy ? "Erzeugt…" : "Link erzeugen"}
           </button>
         )}
@@ -148,6 +148,13 @@ export default function Mitarbeiter({ api }) {
     }
   }
 
+  // Ein Knopf statt vieler: Links für alle ohne Link nacheinander erzeugen
+  async function alleErzeugen() {
+    for (const m of stand.mitarbeiter.filter((x) => !x.zugang)) {
+      if (!(await ausfuehren(m.name, "zugangErneuern", { name: m.name }))) return;
+    }
+  }
+
   async function anlegen(e) {
     e.preventDefault();
     if (await ausfuehren("neu", "mitarbeiterAnlegen", neu)) setNeu({ name: "", farbe: "blue", azubi: false });
@@ -199,6 +206,17 @@ export default function Mitarbeiter({ api }) {
           {beschaeftigt === "neu" ? "Legt an…" : "Anlegen"}
         </button>
       </form>
+
+      {stand && ohneLink > 0 && (
+        <div className="w-hinweis">
+          <span className="w-dot orange" />
+          <span>{ohneLink === 1 ? "1 Mitarbeiter hat noch keinen Link" : `${ohneLink} Mitarbeiter haben noch keinen Link`}</span>
+          <span className="b-wachsen" />
+          <button className="b-btn b-btn-primaer" disabled={!!beschaeftigt} onClick={alleErzeugen}>
+            {beschaeftigt && beschaeftigt !== "neu" ? "Erzeugt…" : "Links für alle erzeugen"}
+          </button>
+        </div>
+      )}
 
       {fehler && <div className="b-fehler">{fehler}</div>}
       {!stand && !fehler && <div className="b-laden">Mitarbeiter werden geladen…</div>}
