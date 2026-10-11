@@ -12,6 +12,7 @@ const zuMinuten = (hhmm) => {
 const zuUhrzeit = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
 const zahl = (s) => parseFloat(String(s).replace(",", "."));
 const runde2 = (n) => Math.round(n * 100) / 100;
+const sauber = (n) => String(n || "").replace(/\s+/g, " ").trim();
 
 export default function KorrekturDialog({ api, zelle, mitarbeiter, datum, onAbbrechen, onGespeichert }) {
   const tag = zelle.normal[0];
@@ -19,8 +20,21 @@ export default function KorrekturDialog({ api, zelle, mitarbeiter, datum, onAbbr
   const [ende, setEnde] = useState(tag.ende);
   const [pause, setPause] = useState(String(tag.pause ?? 0));
   const [stunden, setStunden] = useState(() => Object.fromEntries(zelle.projekte.map((p) => [p.id, String(p.stunden).replace(".", ",")])));
+  const [namen, setNamen] = useState(() => Object.fromEntries(zelle.projekte.map((p) => [p.id, p.name])));
+  const [vorschlaege, setVorschlaege] = useState([]);
   const [speichert, setSpeichert] = useState(false);
   const [fehler, setFehler] = useState("");
+
+  // Baustellen-Liste für die Namensvorschläge (laufende zuerst, dann Archiv)
+  useEffect(() => {
+    let aktiv = true;
+    api("baustellen")
+      .then((d) => aktiv && setVorschlaege([...d.laufend, ...d.archiv].map((b) => b.name)))
+      .catch(() => { /* ohne Vorschläge geht's auch */ });
+    return () => {
+      aktiv = false;
+    };
+  }, [api]);
 
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && !speichert && onAbbrechen();
@@ -43,7 +57,8 @@ export default function KorrekturDialog({ api, zelle, mitarbeiter, datum, onAbbr
   const vorschlagEnde = !passt && b !== null && summe !== null && summe > 0 ? b + p + Math.round(summe * 60) : null;
   const geaendert =
     beginn !== tag.beginn || ende !== tag.ende || p !== (tag.pause ?? 0) ||
-    zelle.projekte.some((pr, i) => Math.abs((werte[i] || 0) - pr.stunden) > 0.001);
+    zelle.projekte.some((pr, i) => Math.abs((werte[i] || 0) - pr.stunden) > 0.001 || sauber(namen[pr.id]) !== pr.name);
+  const namenOk = zelle.projekte.every((pr) => sauber(namen[pr.id]).length > 0);
 
   async function speichern() {
     setSpeichert(true);
@@ -54,7 +69,7 @@ export default function KorrekturDialog({ api, zelle, mitarbeiter, datum, onAbbr
         arbeitsbeginn: beginn,
         arbeitsende: ende,
         pauseMinuten: p,
-        projekte: zelle.projekte.map((pr, i) => ({ id: pr.id, stunden: werte[i] })),
+        projekte: zelle.projekte.map((pr, i) => ({ id: pr.id, stunden: werte[i], name: sauber(namen[pr.id]) })),
       });
       onGespeichert();
     } catch (err) {
@@ -90,22 +105,42 @@ export default function KorrekturDialog({ api, zelle, mitarbeiter, datum, onAbbr
           </div>
 
           <div className="b-block">
-            <h3>Projektstunden</h3>
-            {zelle.projekte.map((pr) => (
-              <label key={pr.id} className="b-projektzeile">
-                <span className="b-quadrat" style={{ background: baustellenFarbe(pr.name) }} />
-                <span className="b-projekt-name">{pr.name}{pr.notiz ? <span className="b-sek klein"> – {pr.notiz}</span> : null}</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  aria-label={`Stunden ${pr.name}`}
-                  value={stunden[pr.id]}
-                  onChange={(ev) => setStunden((s) => ({ ...s, [pr.id]: ev.target.value }))}
-                />
-                <span className="b-sek">h</span>
-              </label>
-            ))}
-            <p className="b-sek klein">Neue Projekte oder andere Baustellen bitte weiterhin in Notion ergänzen.</p>
+            <h3>Projekte</h3>
+            {zelle.projekte.map((pr, i) => {
+              const geaendertName = sauber(namen[pr.id]) !== pr.name;
+              return (
+                <div key={pr.id} className={`b-projektzeile${geaendertName ? " geaendert" : ""}`}>
+                  <span className="b-quadrat" style={{ background: baustellenFarbe(namen[pr.id]) }} />
+                  <input
+                    className="b-projekt-eingabe"
+                    type="text"
+                    list="korrektur-baustellen"
+                    aria-label={`Projekt ${i + 1}`}
+                    value={namen[pr.id]}
+                    onChange={(ev) => setNamen((n) => ({ ...n, [pr.id]: ev.target.value }))}
+                  />
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    aria-label={`Stunden Projekt ${i + 1}`}
+                    value={stunden[pr.id]}
+                    onChange={(ev) => setStunden((s) => ({ ...s, [pr.id]: ev.target.value }))}
+                  />
+                  <span className="b-sek">h</span>
+                  {(geaendertName || pr.notiz) && (
+                    <span className="b-projektzeile-info b-sek klein">
+                      {geaendertName && <>vorher: {pr.name}</>}
+                      {geaendertName && pr.notiz && " · "}
+                      {pr.notiz && <>Notiz: {pr.notiz}</>}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            <datalist id="korrektur-baustellen">
+              {vorschlaege.map((n) => <option key={n} value={n} />)}
+            </datalist>
+            <p className="b-sek klein">Projekt anklicken, um eine andere Baustelle aus der Liste zu wählen oder den Namen zu ändern. Zusätzliche Projekte bitte weiterhin in Notion ergänzen.</p>
           </div>
         </div>
 
@@ -132,7 +167,7 @@ export default function KorrekturDialog({ api, zelle, mitarbeiter, datum, onAbbr
 
         <div className="b-dialog-aktionen">
           <button className="b-btn" onClick={onAbbrechen} disabled={speichert}>Abbrechen</button>
-          <button className="b-btn b-btn-primaer" onClick={speichern} disabled={!passt || !geaendert || speichert}>
+          <button className="b-btn b-btn-primaer" onClick={speichern} disabled={!passt || !geaendert || !namenOk || speichert}>
             {speichert ? "Speichert…" : "Speichern & nach Notion"}
           </button>
         </div>

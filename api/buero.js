@@ -14,7 +14,7 @@
 //   "baustellen"           → laufende + archivierte Baustellen
 //   "baustelleAnlegen"     → neue Baustellen-Seite { name }
 //   "baustelleVerschieben" → { id, ziel: "archiv" | "laufend" }
-//   "korrektur"            → Arbeitstag + Projektstunden gemeinsam ändern
+//   "korrektur"            → Arbeitstag + Projektstunden (und Projektnamen) gemeinsam ändern
 
 import { createHash, timingSafeEqual } from "node:crypto";
 
@@ -263,23 +263,29 @@ async function korrektur({ arbeitstagId, arbeitsbeginn, arbeitsende, pauseMinute
   for (const p of projekte) {
     const stunden = Number(p.stunden);
     if (!Number.isFinite(stunden) || stunden < 0 || stunden > 24) throw new Fehler(400, "Ungültige Stundenzahl");
-    neu.set(normId(p.id), runde2(stunden));
+    // Projektname optional mitschicken (falsches Projekt korrigieren); ohne Namen bleibt der alte
+    const name = p.name === undefined ? null : String(p.name).replace(/\s+/g, " ").trim();
+    if (name !== null && (!name || name.length > 120)) throw new Fehler(400, "Bitte für jedes Projekt einen Namen angeben (max. 120 Zeichen)");
+    neu.set(normId(p.id), { stunden: runde2(stunden), name });
   }
   if (neu.size !== vorhandene.length || !vorhandene.every((p) => neu.has(normId(p.id)))) {
     throw new Fehler(409, "Die Projekte haben sich inzwischen geändert – bitte neu laden");
   }
 
   const netto = nettoStunden(arbeitsbeginn, arbeitsende, pause);
-  const summe = runde2([...neu.values()].reduce((a, b) => a + b, 0));
+  const summe = runde2([...neu.values()].reduce((a, b) => a + b.stunden, 0));
   if (Math.abs(summe - netto) > 0.01) {
     throw new Fehler(400, `Projektstunden (${summe} h) passen nicht zur Arbeitszeit (${netto} h)`);
   }
 
   // Projekte zuerst, dann den Arbeitstag (gleiche Regeln wie die Mitarbeiter-App)
   for (const p of vorhandene) {
-    const stunden = neu.get(normId(p.id));
-    if (Math.abs(stunden - p.stunden) < 0.001) continue;
-    await notion(`pages/${p.id}`, { method: "PATCH", body: JSON.stringify({ properties: { Stunden: { number: stunden } } }) });
+    const { stunden, name } = neu.get(normId(p.id));
+    const properties = {};
+    if (Math.abs(stunden - p.stunden) >= 0.001) properties.Stunden = { number: stunden };
+    if (name !== null && name !== p.name) properties.Projekt = { title: [{ text: { content: name } }] };
+    if (!Object.keys(properties).length) continue;
+    await notion(`pages/${p.id}`, { method: "PATCH", body: JSON.stringify({ properties }) });
   }
 
   const diff = runde2(netto - sollStunden(tag.datum));
