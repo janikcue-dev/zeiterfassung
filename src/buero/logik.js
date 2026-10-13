@@ -116,8 +116,8 @@ export function analysiereZelle(roh) {
   }
   if (!normal.length && projekte.length) warnungen.push({ typ: "summe", text: "Projektstunden ohne Arbeitstag" });
 
-  // Korrigierbar über die Büro-Ansicht: genau ein normaler Tag mit Uhrzeiten und mind. ein Projekt
-  const korrigierbar = normal.length === 1 && !!normal[0].beginn && !!normal[0].ende && projekte.length > 0;
+  // Korrigierbar über die Büro-Ansicht: genau ein normaler Tag mit Uhrzeiten (Projekte lassen sich ergänzen)
+  const korrigierbar = normal.length === 1 && !!normal[0].beginn && !!normal[0].ende;
 
   return {
     leer: arbeitstage.length === 0 && projekte.length === 0,

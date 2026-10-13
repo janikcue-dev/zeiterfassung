@@ -7,7 +7,15 @@ import { alleMitarbeiter, baueMonat, baustellenFarbe, farbeVon, fmtStd, heuteStr
 // Monatsabschluss – jeder Monat steht für sich:
 // Minusstunden werden mit Überstunden desselben Monats aufgefüllt, nichts wird übertragen.
 
-function vormonat() {
+// Zuletzt angesehenen Monat merken (bis der Browser geschlossen wird), sonst Vormonat
+const MONAT_KEY = "buero_monat";
+function startMonat() {
+  try {
+    const m = JSON.parse(sessionStorage.getItem(MONAT_KEY) || "null");
+    if (m && Number.isInteger(m.jahr) && Number.isInteger(m.monat)) return m;
+  } catch {
+    /* ignorieren */
+  }
   const d = new Date();
   d.setDate(1);
   d.setMonth(d.getMonth() - 1);
@@ -57,7 +65,17 @@ function Pruefung({ r }) {
 }
 
 export default function Monatsabschluss({ api }) {
-  const [auswahl, setAuswahl] = useState(vormonat);
+  const [auswahl, setAuswahlRoh] = useState(startMonat);
+  const setAuswahl = (wert) =>
+    setAuswahlRoh((alt) => {
+      const neu = typeof wert === "function" ? wert(alt) : wert;
+      try {
+        sessionStorage.setItem(MONAT_KEY, JSON.stringify(neu));
+      } catch {
+        /* ignorieren */
+      }
+      return neu;
+    });
   const anordnung = useAnordnung();
   const { von, bis } = monatsGrenzen(auswahl.jahr, auswahl.monat);
   const { daten, fehler, laedt, neuLaden } = useDaten(api, von, bis);

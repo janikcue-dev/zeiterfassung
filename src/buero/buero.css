@@ -506,3 +506,30 @@ body.b-body #root {
 .b-karte, .b-ma-karte { box-shadow: none; }
 .b-btn { border-color: #dcdce1; }
 .b-btn.b-btn-leise { border-color: transparent; background: transparent; }
+
+/* ---------- Tag eintragen / korrigieren ---------- */
+.w-kachel.leer { cursor: pointer; flex-direction: column; gap: 4px; }
+.w-kachel.leer .w-plus { font-size: 13px; color: #0062c4; opacity: 0; transition: opacity 0.12s; }
+.w-kachel.leer:hover, .w-kachel.leer:focus-visible { background: rgba(255, 255, 255, 0.6); }
+.w-kachel.leer:hover .w-plus, .w-kachel.leer:focus-visible .w-plus { opacity: 1; }
+.w-leer-text { font-size: 13px; color: #c0392b; }
+.w-gefahr { border: none; background: transparent; font: inherit; color: #b3261e; cursor: pointer; }
+.w-gefahr:disabled { opacity: 0.5; }
+
+.t-datumzeile { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.t-datumzeile .b-feld { width: 190px; }
+.t-datum-text { font-size: 15px; padding-bottom: 12px; }
+.t-verschieben { color: #c25e00; font-weight: 600; }
+.t-arten { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); background: #e9e9ee; border-radius: 12px; padding: 3px; }
+.t-arten button { border: none; background: transparent; padding: 9px 0; border-radius: 9px; font: inherit; font-size: 14px; color: #6e6e73; cursor: pointer; }
+.t-arten button.an { background: #fff; color: #1d1d1f; font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+.t-sonder { margin: 0; font-size: 15px; color: #424245; background: #f7f8fa; border-radius: 14px; padding: 16px; }
+.t-mini { border: none; background: #f2f2f5; color: #1d1d1f; border-radius: 9px; min-width: 32px; height: 32px; padding: 0 9px; font: inherit; font-size: 13px; cursor: pointer; flex: none; }
+.t-weg { font-size: 18px; color: #86868b; }
+.t-weg:hover { color: #b3261e; background: #fdebea; }
+.t-hinzu { align-self: flex-start; border: none; background: transparent; color: #0062c4; font: inherit; font-size: 14px; padding: 8px 4px; cursor: pointer; }
+.b-projektzeile.geloescht input { text-decoration: line-through; color: #86868b; }
+.b-projektzeile.geloescht { background: #fbfbfc; }
+.b-projektzeile.neu { box-shadow: inset 0 0 0 1.5px #b9d7fa; }
+.b-dialog-spalten > .b-block:last-child { flex: 1.5 1 380px; }
+.b-projektzeile .t-mini { margin-left: 2px; }

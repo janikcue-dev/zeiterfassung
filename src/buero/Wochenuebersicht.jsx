@@ -6,7 +6,7 @@ import {
 } from "./logik.js";
 import { AUSGEBLENDETE_MITARBEITER } from "./einstellungen.js";
 import { fuehreZusammen, useAnordnung, useZiehen, verschiebe } from "./anordnung.js";
-import KorrekturDialog from "./KorrekturDialog.jsx";
+import TagDialog from "./TagDialog.jsx";
 
 // Wochenübersicht – reduziertes Design:
 // jeder Mitarbeiter hat eine zarte farbige Bahn, die Kacheln liegen weiß darauf.
@@ -25,6 +25,18 @@ function Saldo({ wert, gross }) {
   return <span className={`w-saldo ${wert > 0 ? "plus" : "minus"}${gross ? " gross" : ""}`}>{fmtSaldo(wert)}</span>;
 }
 
+// Zuletzt angesehene Woche merken (bis der Browser geschlossen wird)
+const WOCHE_KEY = "buero_woche_montag";
+function gemerkteWoche() {
+  try {
+    const w = sessionStorage.getItem(WOCHE_KEY);
+    if (w && /^\d{4}-\d{2}-\d{2}$/.test(w)) return montagVon(w);
+  } catch {
+    /* ignorieren */
+  }
+  return montagVon(heuteStr());
+}
+
 const bahnStil = (f) => ({ "--bahn": `${f.akzent}17`, "--bahn-text": f.fg });
 
 function zeitText(tag) {
@@ -36,9 +48,15 @@ function sonderText(s) {
   return s.gesamt > 0 && s.status !== "Urlaub" ? `${s.status} · ${fmtStd(s.gesamt)} h` : s.status;
 }
 
-function Kachel({ z, onOeffnen, aktiv }) {
+function Kachel({ z, onOeffnen, onNeu, aktiv, name }) {
   if (z.leer) {
-    return <div className={`w-kachel leer${z.fehlt ? " fehlt" : ""}`}>{z.fehlt ? "fehlt" : ""}</div>;
+    // Leere Kachel: Klick trägt einen Tag nach
+    return (
+      <button className={`w-kachel leer${z.fehlt ? " fehlt" : ""}`} onClick={onNeu} aria-label={`Tag für ${name} eintragen`}>
+        <span className="w-leer-text">{z.fehlt ? "fehlt" : ""}</span>
+        <span className="w-plus">+ eintragen</span>
+      </button>
+    );
   }
 
   const nurSonder = z.normal.length === 0 && z.projekte.length === 0;
@@ -74,7 +92,7 @@ function Kachel({ z, onOeffnen, aktiv }) {
 }
 
 // Seitenfenster mit Details zu einer Kachel – hier liegen die Aktionen
-function Detail({ auswahl, onSchliessen, onKorrektur }) {
+function Detail({ auswahl, onSchliessen, onKorrektur, onLoeschen, loescht }) {
   const { z, mitarbeiter, datum } = auswahl;
   const tag = z.normal[0];
   const notionLinks = [
@@ -92,9 +110,9 @@ function Detail({ auswahl, onSchliessen, onKorrektur }) {
   const [, m, t] = datum.split("-").map(Number);
 
   let grund = "";
-  if (!z.korrigierbar && z.normal.length > 1) grund = "Für diesen Tag gibt es zwei Arbeitstag-Einträge – bitte zuerst in Notion bereinigen.";
+  if (!z.korrigierbar && z.normal.length > 1) grund = "Für diesen Tag gibt es zwei Arbeitstag-Einträge – den Tag löschen und neu eintragen, oder in Notion bereinigen.";
   else if (!z.korrigierbar && tag && !tag.beginn) grund = "Teilweise krank: diesen Tag bitte direkt in Notion korrigieren.";
-  else if (!z.korrigierbar && z.projekte.length === 0 && tag) grund = "Keine Projekte eingetragen – bitte in Notion ergänzen.";
+  else if (!tag) grund = "Abwesenheiten lassen sich hier löschen und neu eintragen.";
 
   return (
     <>
@@ -150,6 +168,7 @@ function Detail({ auswahl, onSchliessen, onKorrektur }) {
           {notionLinks.map((l) => (
             <a key={l.url} className="w-link" href={l.url} target="_blank" rel="noreferrer">{l.text} öffnen</a>
           ))}
+          <button className="w-link w-gefahr" disabled={loescht} onClick={onLoeschen}>{loescht ? "Löscht…" : "Ganzen Tag löschen"}</button>
         </div>
       </aside>
     </>
@@ -157,9 +176,19 @@ function Detail({ auswahl, onSchliessen, onKorrektur }) {
 }
 
 export default function Wochenuebersicht({ api }) {
-  const [montag, setMontag] = useState(() => montagVon(heuteStr()));
+  const [montag, setMontagRoh] = useState(gemerkteWoche);
   const [auswahl, setAuswahl] = useState(null);
-  const [korrektur, setKorrektur] = useState(null);
+  const [dialog, setDialog] = useState(null); // { modus: "korrektur" | "neu", z, mitarbeiter, datum }
+  const [loescht, setLoescht] = useState(false);
+  const [aktionsFehler, setAktionsFehler] = useState("");
+  const setMontag = (m) => {
+    setMontagRoh(m);
+    try {
+      sessionStorage.setItem(WOCHE_KEY, m);
+    } catch {
+      /* ignorieren */
+    }
+  };
   const anordnung = useAnordnung();
   const sonntag = addTage(montag, 6);
   const { daten, fehler, laedt, neuLaden } = useDaten(api, montag, sonntag);
@@ -221,6 +250,7 @@ export default function Wochenuebersicht({ api }) {
       </div>
 
       {fehler && <div className="b-fehler">{fehler}</div>}
+      {aktionsFehler && <div className="b-fehler">{aktionsFehler}</div>}
 
       {hinweis && (
         <div className="w-hinweis">
@@ -269,8 +299,10 @@ export default function Wochenuebersicht({ api }) {
                     <div key={key} className="w-bahn" style={bahnStil(farbeVon(m.farbe))}>
                       <Kachel
                         z={z}
+                        name={m.name}
                         aktiv={auswahl?.key === key}
                         onOeffnen={() => setAuswahl({ key, z, mitarbeiter: m.name, datum: zeile.datum })}
+                        onNeu={() => setDialog({ modus: "neu", mitarbeiter: m.name, datum: zeile.datum })}
                       />
                     </div>
                   );
@@ -300,23 +332,46 @@ export default function Wochenuebersicht({ api }) {
         <Detail
           auswahl={auswahl}
           onSchliessen={() => setAuswahl(null)}
+          loescht={loescht}
           onKorrektur={() => {
-            setKorrektur(auswahl);
+            setDialog({ modus: "korrektur", ...auswahl });
             setAuswahl(null);
+          }}
+          onLoeschen={async () => {
+            const { z, mitarbeiter, datum } = auswahl;
+            const was = [z.normal.length && "Arbeitszeit", z.projekte.length && `${z.projekte.length} Baustelle(n)`, ...z.sonder.map((s) => s.status)].filter(Boolean).join(", ");
+            if (!window.confirm(`Den ganzen Tag von ${mitarbeiter} am ${datum.split("-").reverse().join(".")} löschen?\n\n${was}\n\nDie Einträge landen im Notion-Papierkorb und lassen sich dort 30 Tage lang wiederherstellen.`)) return;
+            setLoescht(true);
+            setAktionsFehler("");
+            try {
+              await api("tagLoeschen", {
+                arbeitstagIds: [...z.normal, ...z.sonder].map((a) => a.id),
+                projektIds: z.projekte.map((pr) => pr.id),
+              });
+              setAuswahl(null);
+              neuLaden();
+            } catch (e) {
+              setAktionsFehler(e.message);
+            } finally {
+              setLoescht(false);
+            }
           }}
         />
       )}
 
-      {korrektur && (
-        <KorrekturDialog
+      {dialog && (
+        <TagDialog
           api={api}
-          zelle={korrektur.z}
-          mitarbeiter={korrektur.mitarbeiter}
-          datum={korrektur.datum}
-          onAbbrechen={() => setKorrektur(null)}
-          onGespeichert={() => {
-            setKorrektur(null);
-            neuLaden();
+          modus={dialog.modus}
+          zelle={dialog.z}
+          mitarbeiter={dialog.mitarbeiter}
+          datum={dialog.datum}
+          onAbbrechen={() => setDialog(null)}
+          onGespeichert={(neuesDatum) => {
+            setDialog(null);
+            // Tag in eine andere Woche verschoben/eingetragen → dorthin springen
+            if (neuesDatum && montagVon(neuesDatum) !== montag) setMontag(montagVon(neuesDatum));
+            else neuLaden();
           }}
         />
       )}

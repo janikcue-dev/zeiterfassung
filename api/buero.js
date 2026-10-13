@@ -14,7 +14,9 @@
 //   "baustellen"           → laufende + archivierte Baustellen
 //   "baustelleAnlegen"     → neue Baustellen-Seite { name }
 //   "baustelleVerschieben" → { id, ziel: "archiv" | "laufend" }
-//   "korrektur"            → Arbeitstag + Projektstunden (und Projektnamen) gemeinsam ändern
+//   "korrektur"            → Arbeitstag ändern: Zeiten, Datum (verschieben), Projekte ändern/löschen/hinzufügen
+//   "neuerTag"             → Tag nachtragen { mitarbeiter, datum, art, … } (normal/urlaub/krank/feiertag/schule)
+//   "tagLoeschen"          → { arbeitstagIds, projektIds } in den Notion-Papierkorb
 //   "zugaenge"             → Mitarbeiter mit persönlichem Link (legt die Zugänge-Datenbank beim ersten Mal an)
 //   "mitarbeiterAnlegen"   → { name, farbe, azubi } neuer Mitarbeiter + Link
 //   "zugangErneuern"       → { name } neuer Schlüssel, alter Link ist ungültig
@@ -332,80 +334,224 @@ function nettoStunden(beginn, ende, pause) {
   return runde2(netto / 60);
 }
 
-async function korrektur({ arbeitstagId, arbeitsbeginn, arbeitsende, pauseMinuten, projekte }) {
+const WOCHENTAGE_LANG = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+const wochentag = (d) => WOCHENTAGE_LANG[new Date(d + "T12:00:00").getDay()];
+const titel = (t) => ({ title: [{ text: { content: t } }] });
+
+async function eintraegeAm(datum, mitarbeiter) {
+  const filter = {
+    and: [
+      { property: "Datum", date: { equals: datum } },
+      { property: "Mitarbeiter", select: { equals: mitarbeiter } },
+    ],
+  };
+  const [tage, projekte] = await Promise.all([queryAlle(DB_ARBEITSTAGE, filter), queryAlle(DB_PROJEKTE, filter)]);
+  return { tage, projekte: projekte.map(projektAusSeite) };
+}
+
+// Projektliste aus dem Büro prüfen: [{ id?, name, stunden, loeschen? }]
+function pruefeProjekte(projekte) {
+  if (!Array.isArray(projekte)) throw new Fehler(400, "Keine Projekte übergeben");
+  return projekte.map((p) => {
+    const stunden = Number(p.stunden);
+    if (!p.loeschen && (!Number.isFinite(stunden) || stunden < 0 || stunden > 24)) throw new Fehler(400, "Ungültige Stundenzahl");
+    const name = String(p.name ?? "").replace(/\s+/g, " ").trim();
+    if (!p.loeschen && (!name || name.length > 120)) throw new Fehler(400, "Bitte für jedes Projekt einen Namen angeben (max. 120 Zeichen)");
+    return { id: p.id ? String(p.id) : null, name, stunden: runde2(stunden || 0), loeschen: !!p.loeschen };
+  });
+}
+
+function projektProperties({ name, stunden, datum, mitarbeiter, reihenfolge }) {
+  const p = {};
+  if (name !== undefined) p.Projekt = titel(name);
+  if (stunden !== undefined) p.Stunden = { number: stunden };
+  if (datum !== undefined) p.Datum = { date: { start: datum } };
+  if (mitarbeiter !== undefined) p.Mitarbeiter = { select: { name: mitarbeiter } };
+  // Reihenfolge nur bei mehreren Projekten am Tag (sonst leer) – wie in der Mitarbeiter-App
+  if (reihenfolge !== undefined) p.Reihenfolge = { number: reihenfolge };
+  return p;
+}
+
+const saldoProperties = (diff) => ({
+  // nur ≠ 0 eintragen, sonst Zelle leeren
+  "Überstunden": { number: diff > 0 ? diff : null },
+  Minusstunden: { number: diff < 0 ? diff : null },
+});
+
+// Korrektur eines normalen Arbeitstags:
+// Uhrzeiten, Datum (Tag verschieben), Projekte ändern / löschen / hinzufügen – alles zusammen.
+async function korrektur({ arbeitstagId, datum, arbeitsbeginn, arbeitsende, pauseMinuten, projekte }) {
   if (!istZeit(arbeitsbeginn) || !istZeit(arbeitsende)) throw new Fehler(400, "Bitte Beginn und Ende als HH:MM angeben");
   const pause = Number(pauseMinuten) || 0;
   if (pause < 0 || pause > 600) throw new Fehler(400, "Pause ungültig");
-  if (!Array.isArray(projekte) || projekte.length === 0) throw new Fehler(400, "Keine Projektstunden übergeben");
+  const liste = pruefeProjekte(projekte);
 
   const seite = await notion(`pages/${arbeitstagId}`, { method: "GET" });
   if (normId(seite.parent?.database_id) !== DB_ARBEITSTAGE) throw new Fehler(403, "Kein Eintrag aus der Arbeitstage-Datenbank");
   const tag = arbeitstagAusSeite(seite);
   if (tag.status !== "Normal") throw new Fehler(400, "Nur normale Arbeitstage lassen sich hier korrigieren");
 
-  // Alle Projekte dieses Mitarbeiters an diesem Tag – die Korrektur muss alle enthalten
-  const vorhandene = (await queryAlle(DB_PROJEKTE, {
-    and: [
-      { property: "Datum", date: { equals: tag.datum } },
-      { property: "Mitarbeiter", select: { equals: tag.mitarbeiter } },
-    ],
-  })).map(projektAusSeite);
+  const neuesDatum = datum === undefined || datum === tag.datum ? tag.datum : datum;
+  if (!istDatum(neuesDatum)) throw new Fehler(400, "Ungültiges Datum");
 
-  const andereNormal = (await queryAlle(DB_ARBEITSTAGE, {
-    and: [
-      { property: "Datum", date: { equals: tag.datum } },
-      { property: "Mitarbeiter", select: { equals: tag.mitarbeiter } },
-      { property: "Status", select: { equals: "Normal" } },
-    ],
-  })).filter((s) => normId(s.id) !== normId(tag.id));
-  if (andereNormal.length) throw new Fehler(409, "Für diesen Tag gibt es zwei Arbeitstag-Einträge – bitte zuerst in Notion bereinigen");
-
-  const neu = new Map();
-  for (const p of projekte) {
-    const stunden = Number(p.stunden);
-    if (!Number.isFinite(stunden) || stunden < 0 || stunden > 24) throw new Fehler(400, "Ungültige Stundenzahl");
-    // Projektname optional mitschicken (falsches Projekt korrigieren); ohne Namen bleibt der alte
-    const name = p.name === undefined ? null : String(p.name).replace(/\s+/g, " ").trim();
-    if (name !== null && (!name || name.length > 120)) throw new Fehler(400, "Bitte für jedes Projekt einen Namen angeben (max. 120 Zeichen)");
-    neu.set(normId(p.id), { stunden: runde2(stunden), name });
+  const alt = await eintraegeAm(tag.datum, tag.mitarbeiter);
+  if (alt.tage.some((s) => normId(s.id) !== normId(tag.id) && auswahl(s.properties?.Status) === "Normal")) {
+    throw new Fehler(409, "Für diesen Tag gibt es zwei Arbeitstag-Einträge – bitte zuerst den doppelten löschen");
   }
-  if (neu.size !== vorhandene.length || !vorhandene.every((p) => neu.has(normId(p.id)))) {
+
+  // Alle vorhandenen Projekte müssen im Auftrag vorkommen (behalten oder löschen)
+  const bekannt = new Map(alt.projekte.map((p) => [normId(p.id), p]));
+  const genannt = new Set(liste.filter((p) => p.id).map((p) => normId(p.id)));
+  if (genannt.size !== bekannt.size || ![...bekannt.keys()].every((id) => genannt.has(id)) || liste.some((p) => p.id && !bekannt.has(normId(p.id)))) {
     throw new Fehler(409, "Die Projekte haben sich inzwischen geändert – bitte neu laden");
   }
 
+  const bleiben = liste.filter((p) => !p.loeschen);
+  if (!bleiben.length) throw new Fehler(400, "Mindestens ein Projekt muss bleiben – sonst den ganzen Tag löschen");
   const netto = nettoStunden(arbeitsbeginn, arbeitsende, pause);
-  const summe = runde2([...neu.values()].reduce((a, b) => a + b.stunden, 0));
-  if (Math.abs(summe - netto) > 0.01) {
-    throw new Fehler(400, `Projektstunden (${summe} h) passen nicht zur Arbeitszeit (${netto} h)`);
+  const summe = runde2(bleiben.reduce((a, p) => a + p.stunden, 0));
+  if (Math.abs(summe - netto) > 0.01) throw new Fehler(400, `Projektstunden (${summe} h) passen nicht zur Arbeitszeit (${netto} h)`);
+
+  // Tag verschieben: am Zieltag darf noch nichts für diesen Mitarbeiter stehen
+  if (neuesDatum !== tag.datum) {
+    const ziel = await eintraegeAm(neuesDatum, tag.mitarbeiter);
+    if (ziel.tage.length || ziel.projekte.length) {
+      throw new Fehler(409, `${tag.mitarbeiter} hat am ${neuesDatum.split("-").reverse().join(".")} schon einen Eintrag`);
+    }
   }
 
-  // Projekte zuerst, dann den Arbeitstag (gleiche Regeln wie die Mitarbeiter-App)
-  for (const p of vorhandene) {
-    const { stunden, name } = neu.get(normId(p.id));
-    const properties = {};
-    if (Math.abs(stunden - p.stunden) >= 0.001) properties.Stunden = { number: stunden };
-    if (name !== null && name !== p.name) properties.Projekt = { title: [{ text: { content: name } }] };
-    if (!Object.keys(properties).length) continue;
-    await notion(`pages/${p.id}`, { method: "PATCH", body: JSON.stringify({ properties }) });
+  const mehrere = bleiben.length > 1;
+  const ids = [];
+  let nr = 0;
+  for (const p of liste) {
+    if (p.loeschen) {
+      // In den Notion-Papierkorb (dort 30 Tage wiederherstellbar)
+      await notion(`pages/${p.id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) });
+      continue;
+    }
+    nr++;
+    const reihenfolge = mehrere ? nr : null;
+    if (p.id) {
+      const vorher = bekannt.get(normId(p.id));
+      const properties = {};
+      if (Math.abs(p.stunden - vorher.stunden) >= 0.001) properties.Stunden = { number: p.stunden };
+      if (p.name !== vorher.name) properties.Projekt = titel(p.name);
+      if ((vorher.reihenfolge ?? null) !== reihenfolge) properties.Reihenfolge = { number: reihenfolge };
+      if (neuesDatum !== tag.datum) properties.Datum = { date: { start: neuesDatum } };
+      if (Object.keys(properties).length) await notion(`pages/${p.id}`, { method: "PATCH", body: JSON.stringify({ properties }) });
+      ids.push(p.id);
+    } else {
+      const neu = await notion("pages", {
+        method: "POST",
+        body: JSON.stringify({
+          parent: { database_id: DB_PROJEKTE },
+          properties: projektProperties({ name: p.name, stunden: p.stunden, datum: neuesDatum, mitarbeiter: tag.mitarbeiter, ...(mehrere ? { reihenfolge } : {}) }),
+        }),
+      });
+      ids.push(neu.id);
+    }
   }
 
-  const diff = runde2(netto - sollStunden(tag.datum));
+  const diff = runde2(netto - sollStunden(neuesDatum));
   await notion(`pages/${tag.id}`, {
     method: "PATCH",
     body: JSON.stringify({
       properties: {
+        Tag: titel(wochentag(neuesDatum)),
+        Datum: { date: { start: neuesDatum } },
         Gesamtarbeitszeit: { number: netto },
         Arbeitsbeginn: { rich_text: [{ text: { content: arbeitsbeginn } }] },
         Arbeitsende: { rich_text: [{ text: { content: arbeitsende } }] },
         PauseMinuten: { number: pause },
-        // nur ≠ 0 eintragen, sonst Zelle leeren
-        "Überstunden": { number: diff > 0 ? diff : null },
-        Minusstunden: { number: diff < 0 ? diff : null },
+        ...saldoProperties(diff),
+        Projekte: { relation: ids.map((id) => ({ id })) },
       },
     }),
   });
 
-  return { ok: true, gesamt: netto, saldo: diff };
+  return { ok: true, gesamt: netto, saldo: diff, datum: neuesDatum };
+}
+
+// Neuen Tag für einen Mitarbeiter anlegen (fehlender Tag, Nachtrag, Urlaub, Krank …)
+const TAGESARTEN = { normal: "Normal", urlaub: "Urlaub", krank: "Krankheit", feiertag: "Feiertag", schule: "Schultag" };
+
+async function neuerTag({ mitarbeiter, datum, art, arbeitsbeginn, arbeitsende, pauseMinuten, projekte }) {
+  const status = TAGESARTEN[art];
+  if (!status) throw new Fehler(400, "Unbekannte Tagesart");
+  if (!istDatum(datum)) throw new Fehler(400, "Bitte ein Datum wählen");
+  const name = String(mitarbeiter || "").trim();
+  const schema = await notion(`databases/${DB_ARBEITSTAGE}`, { method: "GET" });
+  if (!(schema.properties?.Mitarbeiter?.select?.options || []).some((o) => o.name === name)) throw new Fehler(400, "Unbekannter Mitarbeiter");
+
+  const vorhanden = await eintraegeAm(datum, name);
+  if (vorhanden.tage.length || vorhanden.projekte.length) {
+    throw new Fehler(409, `${name} hat an diesem Tag schon einen Eintrag – bitte die Kachel bearbeiten`);
+  }
+
+  const soll = sollStunden(datum);
+  const properties = {
+    Tag: titel(wochentag(datum)),
+    Datum: { date: { start: datum } },
+    Mitarbeiter: { select: { name } },
+    Status: { select: { name: status } },
+  };
+
+  if (status === "Normal") {
+    if (!istZeit(arbeitsbeginn) || !istZeit(arbeitsende)) throw new Fehler(400, "Bitte Beginn und Ende als HH:MM angeben");
+    const pause = Number(pauseMinuten) || 0;
+    if (pause < 0 || pause > 600) throw new Fehler(400, "Pause ungültig");
+    const liste = pruefeProjekte(projekte).filter((p) => !p.loeschen);
+    if (!liste.length) throw new Fehler(400, "Bitte mindestens ein Projekt eintragen");
+    const netto = nettoStunden(arbeitsbeginn, arbeitsende, pause);
+    const summe = runde2(liste.reduce((a, p) => a + p.stunden, 0));
+    if (Math.abs(summe - netto) > 0.01) throw new Fehler(400, `Projektstunden (${summe} h) passen nicht zur Arbeitszeit (${netto} h)`);
+
+    const ids = [];
+    const mehrere = liste.length > 1;
+    for (const [i, p] of liste.entries()) {
+      const neu = await notion("pages", {
+        method: "POST",
+        body: JSON.stringify({
+          parent: { database_id: DB_PROJEKTE },
+          properties: projektProperties({ name: p.name, stunden: p.stunden, datum, mitarbeiter: name, ...(mehrere ? { reihenfolge: i + 1 } : {}) }),
+        }),
+      });
+      ids.push(neu.id);
+    }
+    const diff = runde2(netto - soll);
+    Object.assign(properties, {
+      Gesamtarbeitszeit: { number: netto },
+      Arbeitsbeginn: { rich_text: [{ text: { content: arbeitsbeginn } }] },
+      Arbeitsende: { rich_text: [{ text: { content: arbeitsende } }] },
+      PauseMinuten: { number: pause },
+      Projekte: { relation: ids.map((id) => ({ id })) },
+    });
+    if (diff > 0) properties["Überstunden"] = { number: diff };
+    if (diff < 0) properties.Minusstunden = { number: diff };
+  } else {
+    // wie die Mitarbeiter-App: Urlaub/Schule 0 h, Feiertag und Krankheit = Soll des Tages
+    properties.Gesamtarbeitszeit = { number: status === "Feiertag" || status === "Krankheit" ? soll : 0 };
+  }
+
+  await notion("pages", { method: "POST", body: JSON.stringify({ parent: { database_id: DB_ARBEITSTAGE }, properties }) });
+  return { ok: true };
+}
+
+// Ganzen Tag eines Mitarbeiters löschen (Arbeitstag-Einträge + zugehörige Projekte) – landet im Notion-Papierkorb
+async function tagLoeschen({ arbeitstagIds, projektIds }) {
+  const tagIds = Array.isArray(arbeitstagIds) ? arbeitstagIds.map(String) : [];
+  const projIds = Array.isArray(projektIds) ? projektIds.map(String) : [];
+  if (!tagIds.length && !projIds.length) throw new Fehler(400, "Nichts zum Löschen ausgewählt");
+  for (const [ids, db] of [[tagIds, DB_ARBEITSTAGE], [projIds, DB_PROJEKTE]]) {
+    for (const id of ids) {
+      const s = await notion(`pages/${id}`, { method: "GET" });
+      if (normId(s.parent?.database_id) !== db) throw new Fehler(403, "Eintrag gehört nicht zur Zeiterfassung");
+    }
+  }
+  for (const id of [...projIds, ...tagIds]) {
+    await notion(`pages/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) });
+  }
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------
@@ -451,6 +597,8 @@ export default async function handler(req, res) {
       case "baustelleAnlegen": return res.status(200).json(await baustelleAnlegen(daten));
       case "baustelleVerschieben": return res.status(200).json(await baustelleVerschieben(daten));
       case "korrektur": return res.status(200).json(await korrektur(daten));
+      case "neuerTag": return res.status(200).json(await neuerTag(daten));
+      case "tagLoeschen": return res.status(200).json(await tagLoeschen(daten));
       case "zugaenge": return res.status(200).json(await zugaengeStand());
       case "mitarbeiterAnlegen": return res.status(200).json(await mitarbeiterAnlegen(daten));
       case "zugangErneuern": return res.status(200).json(await zugangSetzen(String(daten.name || ""), { schluessel: neuerSchluessel() }));
