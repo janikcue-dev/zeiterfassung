@@ -123,6 +123,7 @@ export function analysiereZelle(roh) {
     leer: arbeitstage.length === 0 && projekte.length === 0,
     normal, sonder, projekte, gearbeitet, projektSumme, saldo, warnungen, korrigierbar,
     abweichendeBaustellen: new Set(),
+    geprueft: [],
   };
 }
 
@@ -150,13 +151,24 @@ function vergleicheBaustellen(zellenDesTages, grenze) {
     const spanne = runde2(Math.max(...werte) - Math.min(...werte));
     if (spanne < 0.01) continue;
     if (grenze !== null && grenze !== undefined && spanne > grenze + 0.001) continue;
-    anzahl++;
+    // Schlüssel enthält alle Stunden → ändert sich ein Wert, erscheint der Hinweis wieder
+    const sortiert = [...b.eintraege].sort((x, y) => x.mitarbeiter.localeCompare(y.mitarbeiter, "de"));
+    const schluessel = `${k}=${sortiert.map((e) => `${e.mitarbeiter}:${e.stunden}`).join(",")}`;
+    const arbeitstagIds = b.eintraege.flatMap((e) => zellenDesTages.get(e.mitarbeiter).normal.map((a) => a.id));
+    const geprueft = b.eintraege.some((e) => zellenDesTages.get(e.mitarbeiter).normal.some((a) => (a.geprueft || []).includes(schluessel)));
     const liste = b.eintraege.map((e) => `${e.mitarbeiter} ${fmtStd(e.stunden)} h`).join(", ");
+    const hinweis = { typ: "baustelle", text: `${b.anzeige}: ${liste}`, schluessel, arbeitstagIds };
     for (const e of b.eintraege) {
       const z = zellenDesTages.get(e.mitarbeiter);
+      if (geprueft) {
+        // Vom Büro als „so in Ordnung“ markiert → kein Hinweis mehr, aber im Detail sichtbar
+        z.geprueft.push(hinweis);
+        continue;
+      }
       z.abweichendeBaustellen.add(k);
-      z.warnungen.push({ typ: "baustelle", text: `${b.anzeige}: ${liste}` });
+      z.warnungen.push(hinweis);
     }
+    if (!geprueft) anzahl++;
   }
   return anzahl;
 }
@@ -302,6 +314,9 @@ export function baueMonat(daten, jahr, monat, heute = heuteStr(), optionen = {})
         krankStunden: summe(at.filter((a) => a.status === "Krankheit"), "gesamt"),
         fehlendeTage: tageDesMa.filter((z) => z.fehlt).length,
         tageMitWarnung: tageDesMa.filter((z) => z.warnungen.length).length,
+        // Für die Anzeige beim Darüberfahren: welche Tage genau
+        warnTage: tage.map((t, i) => ({ datum: t, texte: tageDesMa[i].warnungen.map((w) => w.text) })).filter((x) => x.texte.length),
+        fehlTage: tage.filter((t, i) => tageDesMa[i].fehlt),
         summenAbweichung: Math.abs(gesamt - gearbeitetLautArbeitstagen) > 0.01 ? runde2(gesamt - gearbeitetLautArbeitstagen) : 0,
       };
     })

@@ -101,6 +101,16 @@ export default function BueroApp() {
     };
   }, [passwort, geprueft, abmelden]);
 
+  // Aus dem Monatsabschluss direkt in die Woche eines Tages springen
+  const zuWoche = useCallback((datum) => {
+    try {
+      sessionStorage.setItem("buero_woche_montag", datum);
+    } catch {
+      /* ignorieren */
+    }
+    window.location.hash = "woche";
+  }, []);
+
   const api = useCallback(
     (action, daten) =>
       bueroApi(action, daten, passwort).catch((e) => {
@@ -143,7 +153,7 @@ export default function BueroApp() {
 
       <main className="b-main">
         {ansicht === "woche" && <Wochenuebersicht api={api} />}
-        {ansicht === "monat" && <Monatsabschluss api={api} />}
+        {ansicht === "monat" && <Monatsabschluss api={api} zuWoche={zuWoche} />}
         {ansicht === "baustellen" && <Baustellen api={api} />}
         {ansicht === "mitarbeiter" && <Mitarbeiter api={api} />}
       </main>

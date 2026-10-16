@@ -17,6 +17,7 @@
 //   "korrektur"            → Arbeitstag ändern: Zeiten, Datum (verschieben), Projekte ändern/löschen/hinzufügen
 //   "neuerTag"             → Tag nachtragen { mitarbeiter, datum, art, … } (normal/urlaub/krank/feiertag/schule)
 //   "tagLoeschen"          → { arbeitstagIds, projektIds } in den Notion-Papierkorb
+//   "hinweisGeprueft"      → { arbeitstagIds, schluessel, entfernen? } Baustellen-Abweichung als geprüft markieren
 //   "zugaenge"             → Mitarbeiter mit persönlichem Link (legt die Zugänge-Datenbank beim ersten Mal an)
 //   "mitarbeiterAnlegen"   → { name, farbe, azubi } neuer Mitarbeiter + Link
 //   "zugangErneuern"       → { name } neuer Schlüssel, alter Link ist ungültig
@@ -120,6 +121,8 @@ function arbeitstagAusSeite(s) {
     ueber: zahl(p["Überstunden"]) ?? 0,
     minus: zahl(p.Minusstunden) ?? 0,
     beginn: text(p.Arbeitsbeginn),
+    // Vom Büro als „in Ordnung“ markierte Baustellen-Abweichungen (eine pro Zeile)
+    geprueft: text(p[GEPRUEFT]).split("\n").map((x) => x.trim()).filter(Boolean),
     ende: text(p.Arbeitsende),
     pause: zahl(p.PauseMinuten),
   };
@@ -149,6 +152,46 @@ const zeitraumFilter = (von, bis) => ({
 // ---------------------------------------------------------------------
 // Aktionen
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Hinweis „gleiche Baustelle, andere Stunden“ als geprüft markieren
+// Gespeichert in der Arbeitstage-Datenbank (Textfeld "Hinweis geprüft", wird bei Bedarf angelegt).
+// ---------------------------------------------------------------------
+const GEPRUEFT = "Hinweis geprüft";
+let geprueftFeldDa = false;
+
+async function sichereGeprueftFeld() {
+  if (geprueftFeldDa) return;
+  const schema = await notion(`databases/${DB_ARBEITSTAGE}`, { method: "GET" });
+  if (!schema.properties?.[GEPRUEFT]) {
+    await notion(`databases/${DB_ARBEITSTAGE}`, {
+      method: "PATCH",
+      body: JSON.stringify({ properties: { [GEPRUEFT]: { rich_text: {} } } }),
+    });
+  }
+  geprueftFeldDa = true;
+}
+
+async function hinweisGeprueft({ arbeitstagIds, schluessel, entfernen }) {
+  const key = String(schluessel || "").trim();
+  if (!key || key.length > 400 || key.includes("\n")) throw new Fehler(400, "Ungültiger Hinweis");
+  const ids = Array.isArray(arbeitstagIds) ? arbeitstagIds.map(String) : [];
+  if (!ids.length) throw new Fehler(400, "Kein Eintrag angegeben");
+  await sichereGeprueftFeld();
+  for (const id of ids) {
+    const seite = await notion(`pages/${id}`, { method: "GET" });
+    if (normId(seite.parent?.database_id) !== DB_ARBEITSTAGE) throw new Fehler(403, "Kein Eintrag aus der Arbeitstage-Datenbank");
+    let liste = text(seite.properties?.[GEPRUEFT]).split("\n").map((x) => x.trim()).filter(Boolean);
+    liste = entfernen ? liste.filter((x) => x !== key) : [...liste.filter((x) => x !== key), key];
+    let inhalt = liste.join("\n");
+    while (inhalt.length > 1900 && liste.length > 1) inhalt = (liste = liste.slice(1)).join("\n"); // Notion-Grenze pro Textblock
+    await notion(`pages/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ properties: { [GEPRUEFT]: { rich_text: inhalt ? [{ text: { content: inhalt } }] : [] } } }),
+    });
+  }
+  return { ok: true };
+}
+
 async function ladeDaten({ von, bis }) {
   if (!istDatum(von) || !istDatum(bis) || von > bis) throw new Fehler(400, "Ungültiger Zeitraum");
   const tage = (new Date(bis + "T12:00:00") - new Date(von + "T12:00:00")) / 864e5;
@@ -599,6 +642,7 @@ export default async function handler(req, res) {
       case "korrektur": return res.status(200).json(await korrektur(daten));
       case "neuerTag": return res.status(200).json(await neuerTag(daten));
       case "tagLoeschen": return res.status(200).json(await tagLoeschen(daten));
+      case "hinweisGeprueft": return res.status(200).json(await hinweisGeprueft(daten));
       case "zugaenge": return res.status(200).json(await zugaengeStand());
       case "mitarbeiterAnlegen": return res.status(200).json(await mitarbeiterAnlegen(daten));
       case "zugangErneuern": return res.status(200).json(await zugangSetzen(String(daten.name || ""), { schluessel: neuerSchluessel() }));

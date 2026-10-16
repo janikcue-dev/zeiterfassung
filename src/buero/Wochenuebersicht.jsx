@@ -92,7 +92,7 @@ function Kachel({ z, onOeffnen, onNeu, aktiv, name }) {
 }
 
 // Seitenfenster mit Details zu einer Kachel – hier liegen die Aktionen
-function Detail({ auswahl, onSchliessen, onKorrektur, onLoeschen, loescht }) {
+function Detail({ auswahl, onSchliessen, onKorrektur, onLoeschen, loescht, onGeprueft, prueft }) {
   const { z, mitarbeiter, datum } = auswahl;
   const tag = z.normal[0];
   const notionLinks = [
@@ -126,9 +126,30 @@ function Detail({ auswahl, onSchliessen, onKorrektur, onLoeschen, loescht }) {
           <button className="w-rund" onClick={onSchliessen} aria-label="Schließen">×</button>
         </div>
 
-        {z.warnungen.length > 0 && (
+        {(z.warnungen.length > 0 || z.geprueft.length > 0) && (
           <ul className="w-detail-hinweise">
-            {z.warnungen.map((w, i) => <li key={i}><span className="w-dot orange" />{w.text}</li>)}
+            {z.warnungen.map((w, i) => (
+              <li key={i}>
+                <span className="w-dot orange" />
+                <span className="w-hinweis-text">
+                  {w.text}
+                  {w.typ === "baustelle" && (
+                    <button className="w-mini-knopf" disabled={prueft} onClick={() => onGeprueft(w, false)}>
+                      Passt so – als geprüft markieren
+                    </button>
+                  )}
+                </span>
+              </li>
+            ))}
+            {z.geprueft.map((w, i) => (
+              <li key={`g${i}`} className="w-geprueft">
+                <span className="w-haken">✓</span>
+                <span className="w-hinweis-text">
+                  Geprüft: {w.text}
+                  <button className="w-mini-knopf leise" disabled={prueft} onClick={() => onGeprueft(w, true)}>Zurücknehmen</button>
+                </span>
+              </li>
+            ))}
           </ul>
         )}
 
@@ -180,6 +201,7 @@ export default function Wochenuebersicht({ api }) {
   const [auswahl, setAuswahl] = useState(null);
   const [dialog, setDialog] = useState(null); // { modus: "korrektur" | "neu", z, mitarbeiter, datum }
   const [loescht, setLoescht] = useState(false);
+  const [prueft, setPrueft] = useState(false);
   const [aktionsFehler, setAktionsFehler] = useState("");
   const setMontag = (m) => {
     setMontagRoh(m);
@@ -333,6 +355,20 @@ export default function Wochenuebersicht({ api }) {
           auswahl={auswahl}
           onSchliessen={() => setAuswahl(null)}
           loescht={loescht}
+          prueft={prueft}
+          onGeprueft={async (hinweis, entfernen) => {
+            setPrueft(true);
+            setAktionsFehler("");
+            try {
+              await api("hinweisGeprueft", { arbeitstagIds: hinweis.arbeitstagIds, schluessel: hinweis.schluessel, entfernen });
+              setAuswahl(null);
+              neuLaden();
+            } catch (e) {
+              setAktionsFehler(e.message);
+            } finally {
+              setPrueft(false);
+            }
+          }}
           onKorrektur={() => {
             setDialog({ modus: "korrektur", ...auswahl });
             setAuswahl(null);

@@ -50,21 +50,65 @@ function Abwesenheit({ r }) {
   return teile.length ? <span className="klein">{teile.join(" · ")}</span> : <span className="b-sek">–</span>;
 }
 
-function Pruefung({ r }) {
+const WT = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+const tagKurz = (d) => {
+  const [, m, t] = d.split("-").map(Number);
+  return `${WT[new Date(d + "T12:00:00").getDay()]} ${t}.${m}.`;
+};
+
+function Pruefung({ r, zuWoche }) {
   const punkte = [];
   if (r.tageMitWarnung) punkte.push(`${r.tageMitWarnung} ${r.tageMitWarnung === 1 ? "Tag" : "Tage"} mit Hinweis`);
   if (r.fehlendeTage) punkte.push(`${r.fehlendeTage} ohne Eintrag`);
   if (r.summenAbweichung) punkte.push(`Projekte ≠ Arbeitstage (${fmtStd(r.summenAbweichung)} h)`);
-  // Ein Punkt statt Chip-Stapel: grün = stimmig, orange = hinschauen (Details beim Darüberfahren)
+  if (!punkte.length) {
+    return (
+      <span className="m-pruefung">
+        <span className="w-dot gruen" />
+        <span className="m-pruefung-text">stimmig</span>
+      </span>
+    );
+  }
+  // Beim Darüberfahren: welche Tage genau – ein Klick springt in die Woche
   return (
-    <span className="m-pruefung" title={punkte.join(" · ") || "Alles stimmig"}>
-      <span className={`w-dot ${punkte.length ? "orange" : "gruen"}`} />
-      <span className="m-pruefung-text">{punkte.length ? punkte[0] + (punkte.length > 1 ? ` +${punkte.length - 1}` : "") : "stimmig"}</span>
+    <span className="m-pruefung offen" tabIndex={0} aria-label={`${punkte.join(", ")} – Tage anzeigen`}>
+      <span className="w-dot orange" />
+      <span className="m-pruefung-text">{punkte[0] + (punkte.length > 1 ? ` +${punkte.length - 1}` : "")}</span>
+      <span className="m-pop" role="tooltip">
+        {r.warnTage.length > 0 && (
+          <span className="m-pop-gruppe">
+            <span className="m-pop-titel">Hinweise</span>
+            {r.warnTage.map((w) => (
+              <button key={w.datum} className="m-pop-tag" onClick={() => zuWoche(w.datum)}>
+                <b>{tagKurz(w.datum)}</b>
+                <span>{w.texte.join(" · ")}</span>
+              </button>
+            ))}
+          </span>
+        )}
+        {r.fehlTage.length > 0 && (
+          <span className="m-pop-gruppe">
+            <span className="m-pop-titel">Ohne Eintrag</span>
+            <span className="m-pop-chips">
+              {r.fehlTage.map((d) => (
+                <button key={d} className="m-pop-chip" onClick={() => zuWoche(d)}>{tagKurz(d)}</button>
+              ))}
+            </span>
+          </span>
+        )}
+        {r.summenAbweichung !== 0 && (
+          <span className="m-pop-gruppe">
+            <span className="m-pop-titel">Summe</span>
+            <span>Projektstunden und Arbeitstage weichen um {fmtStd(r.summenAbweichung)} h ab.</span>
+          </span>
+        )}
+        <span className="m-pop-fuss">Tag anklicken, um zur Woche zu springen</span>
+      </span>
     </span>
   );
 }
 
-export default function Monatsabschluss({ api }) {
+export default function Monatsabschluss({ api, zuWoche }) {
   const [auswahl, setAuswahlRoh] = useState(startMonat);
   const setAuswahl = (wert) =>
     setAuswahlRoh((alt) => {
@@ -200,7 +244,7 @@ export default function Monatsabschluss({ api }) {
                         )}
                       </td>
                       <td><Abwesenheit r={r} /></td>
-                      <td className="nicht-drucken"><Pruefung r={r} /></td>
+                      <td className="nicht-drucken"><Pruefung r={r} zuWoche={zuWoche} /></td>
                     </tr>
                   );
                 })}
