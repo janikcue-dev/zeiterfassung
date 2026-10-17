@@ -18,6 +18,7 @@
 //   "neuerTag"             → Tag nachtragen { mitarbeiter, datum, art, … } (normal/urlaub/krank/feiertag/schule)
 //   "tagLoeschen"          → { arbeitstagIds, projektIds } in den Notion-Papierkorb
 //   "hinweisGeprueft"      → { arbeitstagIds, schluessel, entfernen? } Baustellen-Abweichung als geprüft markieren
+//   "baustellenStunden"    → { von, bis } Projektstunden im Zeitraum (für "Stunden pro Baustelle")
 //   "zugaenge"             → Mitarbeiter mit persönlichem Link (legt die Zugänge-Datenbank beim ersten Mal an)
 //   "mitarbeiterAnlegen"   → { name, farbe, azubi } neuer Mitarbeiter + Link
 //   "zugangErneuern"       → { name } neuer Schlüssel, alter Link ist ungültig
@@ -227,6 +228,24 @@ async function ladeDaten({ von, bis }) {
     azubis,
     arbeitstage: arbeitstage.map(arbeitstagAusSeite),
     projekte: projekte.map(projektAusSeite),
+  };
+}
+
+// Stunden pro Baustelle für einen frei wählbaren Zeitraum (nur Projekte-Datenbank, bis 3 Jahre)
+async function baustellenStunden({ von, bis }) {
+  if (!istDatum(von) || !istDatum(bis) || von > bis) throw new Fehler(400, "Ungültiger Zeitraum");
+  const tage = (new Date(bis + "T12:00:00") - new Date(von + "T12:00:00")) / 864e5;
+  if (tage > 1100) throw new Fehler(400, "Zeitraum zu lang (höchstens 3 Jahre)");
+  const projekte = await queryAlle(DB_PROJEKTE, zeitraumFilter(von, bis), [{ property: "Datum", direction: "ascending" }]);
+  let azubis = [];
+  try {
+    azubis = (await ladeZugaenge()).liste.filter((z) => z.azubi).map((z) => z.name);
+  } catch {
+    /* ohne Zugänge zählen alle als Gesellen */
+  }
+  return {
+    azubis,
+    projekte: projekte.map(projektAusSeite).map(({ datum, mitarbeiter, name, stunden }) => ({ datum, mitarbeiter, name, stunden })),
   };
 }
 
@@ -647,6 +666,7 @@ export default async function handler(req, res) {
       case "neuerTag": return res.status(200).json(await neuerTag(daten));
       case "tagLoeschen": return res.status(200).json(await tagLoeschen(daten));
       case "hinweisGeprueft": return res.status(200).json(await hinweisGeprueft(daten));
+      case "baustellenStunden": return res.status(200).json(await baustellenStunden(daten));
       case "zugaenge": return res.status(200).json(await zugaengeStand());
       case "mitarbeiterAnlegen": return res.status(200).json(await mitarbeiterAnlegen(daten));
       case "zugangErneuern": return res.status(200).json(await zugangSetzen(String(daten.name || ""), { schluessel: neuerSchluessel() }));

@@ -4,6 +4,7 @@ import { bueroApi, gespeichertesPasswort, merkePasswort, NichtAngemeldet } from 
 import Wochenuebersicht from "./Wochenuebersicht.jsx";
 import Monatsabschluss from "./Monatsabschluss.jsx";
 import Baustellen from "./Baustellen.jsx";
+import BaustellenStunden from "./BaustellenStunden.jsx";
 import Mitarbeiter from "./Mitarbeiter.jsx";
 
 // =====================================================================
@@ -14,6 +15,7 @@ import Mitarbeiter from "./Mitarbeiter.jsx";
 const ANSICHTEN = [
   { key: "woche", label: "Wochenübersicht" },
   { key: "monat", label: "Monatsabschluss" },
+  { key: "stunden", label: "Stunden pro Baustelle" },
   { key: "baustellen", label: "Baustellen" },
   { key: "mitarbeiter", label: "Mitarbeiter" },
 ];
@@ -154,6 +156,7 @@ export default function BueroApp() {
       <main className="b-main">
         {ansicht === "woche" && <Wochenuebersicht api={api} />}
         {ansicht === "monat" && <Monatsabschluss api={api} zuWoche={zuWoche} />}
+        {ansicht === "stunden" && <BaustellenStunden api={api} />}
         {ansicht === "baustellen" && <Baustellen api={api} />}
         {ansicht === "mitarbeiter" && <Mitarbeiter api={api} />}
       </main>

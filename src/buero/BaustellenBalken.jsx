@@ -2,7 +2,7 @@ import { baustellenFarbe, fmtStd } from "./logik.js";
 
 // Ein Balken pro Baustelle: kräftig = Gesellen, im selben Farbton blasser = Helfer/Azubis.
 // Beschriftung sitzt über dem jeweiligen Balkenstück.
-export default function BaustellenBalken({ baustellen }) {
+export default function BaustellenBalken({ baustellen, offen, onAuswahl, detail }) {
   const max = Math.max(1, ...baustellen.map((b) => b.stunden));
   const mitHelfer = baustellen.some((b) => b.helfer > 0);
   return (
@@ -18,9 +18,19 @@ export default function BaustellenBalken({ baustellen }) {
         const pg = (b.gesellen / max) * 100;
         const ph = (b.helfer / max) * 100;
         return (
-          <div key={b.name} className="bb-zeile">
+          <div
+            key={b.name}
+            className={`bb-zeile${onAuswahl ? " klickbar" : ""}${offen === b.name ? " offen" : ""}`}
+            {...(onAuswahl ? {
+              role: "button",
+              tabIndex: 0,
+              "aria-expanded": offen === b.name,
+              onClick: () => onAuswahl(b.name),
+              onKeyDown: (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onAuswahl(b.name)),
+            } : {})}
+          >
             <div className="bb-kopf">
-              <span className="bb-gesellen" style={{ width: `max(${pg}%, 260px)` }}>
+              <span className="bb-gesellen" style={{ width: `min(max(${pg}%, 260px), calc(100% - ${b.helfer > 0 ? 220 : 110}px))` }}>
                 <span className="bb-name">{b.name}</span>
                 {b.gesellen > 0 && <span className="bb-std" style={{ color: farbe }}>{fmtStd(b.gesellen)} h</span>}
               </span>
@@ -40,6 +50,7 @@ export default function BaustellenBalken({ baustellen }) {
               {b.gesellenNamen.join(", ")}
               {b.helferNamen.length > 0 && <>{b.gesellenNamen.length ? " · " : ""}Helfer: {b.helferNamen.join(", ")}</>}
             </div>
+            {detail && offen === b.name && detail(b)}
           </div>
         );
       })}

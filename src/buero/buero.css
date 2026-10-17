@@ -585,3 +585,22 @@ body.b-body #root {
 .bb-spur { height: 12px; background: #ededf0; border-radius: 999px; overflow: hidden; display: flex; }
 .bb-spur > div { height: 100%; }
 .bb-leute { font-size: 12px; color: #86868b; }
+
+/* ---------- Stunden pro Baustelle ---------- */
+.bs-auswahl { display: flex; flex-direction: column; gap: 12px; }
+.bs-arten { grid-template-columns: repeat(6, minmax(0, 1fr)); max-width: 820px; }
+.bs-frei { display: flex; gap: 12px; flex-wrap: wrap; }
+.bs-frei .b-feld { width: 190px; }
+.bs-karte { display: flex; flex-direction: column; gap: 22px; transition: opacity 0.15s; }
+.bs-kopfzeile { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.bs-summe { font-size: 16px; }
+.bs-suche input { height: 38px; width: 240px; border: none; border-radius: 10px; background: #f2f2f5; padding: 0 12px; font: inherit; font-size: 14px; }
+.bs-suche input:focus { outline: 2px solid #0062c4; }
+.bb-zeile.klickbar { cursor: pointer; border-radius: 12px; margin: -8px -10px; padding: 8px 10px; }
+.bb-zeile.klickbar:hover, .bb-zeile.klickbar:focus-visible, .bb-zeile.offen { background: #f7f7f9; outline: none; }
+.bs-detail { display: flex; flex-direction: column; gap: 8px; padding: 6px 0 4px; }
+.bs-detail-liste { display: flex; flex-wrap: wrap; gap: 8px; }
+.bs-detail-ma { display: flex; gap: 10px; align-items: baseline; background: #fff; border: 1px solid #ececf0; border-radius: 10px; padding: 6px 10px; font-size: 13.5px; }
+.bs-detail-ma b { font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) { .bs-arten { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.bb-gesamt { white-space: nowrap; }
