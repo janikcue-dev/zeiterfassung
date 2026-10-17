@@ -322,21 +322,33 @@ export function baueMonat(daten, jahr, monat, heute = heuteStr(), optionen = {})
     })
     .filter(Boolean);
 
-  // Stunden pro Baustelle
-  const proBaustelle = new Map();
-  for (const p of daten.projekte) {
-    const k = normName(p.name);
-    if (!k) continue;
-    const e = proBaustelle.get(k) || { name: p.name, stunden: 0, mitarbeiter: new Set() };
-    e.stunden = runde2(e.stunden + p.stunden);
-    e.mitarbeiter.add(p.mitarbeiter);
-    proBaustelle.set(k, e);
-  }
-  const baustellen = [...proBaustelle.values()]
-    .map((b) => ({ ...b, mitarbeiter: [...b.mitarbeiter] }))
-    .sort((a, b) => b.stunden - a.stunden);
+  const baustellen = stundenProBaustelle(daten.projekte, daten.azubis);
 
   return { zeilen, baustellen, abweichungen, von, bis };
+}
+
+// Stunden pro Baustelle, getrennt nach Gesellen und Helfern/Azubis (Azubi-Haken auf der Mitarbeiter-Seite)
+export function stundenProBaustelle(projekte, azubis = []) {
+  const helfer = new Set(azubis || []);
+  const proBaustelle = new Map();
+  for (const p of projekte) {
+    const k = normName(p.name);
+    if (!k) continue;
+    const e = proBaustelle.get(k) || { name: p.name, stunden: 0, gesellen: 0, helfer: 0, gesellenNamen: new Set(), helferNamen: new Set() };
+    const istHelfer = helfer.has(p.mitarbeiter);
+    e.stunden = runde2(e.stunden + p.stunden);
+    if (istHelfer) {
+      e.helfer = runde2(e.helfer + p.stunden);
+      e.helferNamen.add(p.mitarbeiter);
+    } else {
+      e.gesellen = runde2(e.gesellen + p.stunden);
+      e.gesellenNamen.add(p.mitarbeiter);
+    }
+    proBaustelle.set(k, e);
+  }
+  return [...proBaustelle.values()]
+    .map((b) => ({ ...b, gesellenNamen: [...b.gesellenNamen], helferNamen: [...b.helferNamen], mitarbeiter: [...b.gesellenNamen, ...b.helferNamen] }))
+    .sort((a, b) => b.stunden - a.stunden);
 }
 
 // CSV für Steuerbüro/Lohn (Semikolon + Dezimalkomma, öffnet sauber in deutschem Excel)

@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { useDaten } from "./api.js";
+import BaustellenBalken from "./BaustellenBalken.jsx";
 import { fuehreZusammen, useAnordnung, useZiehen, verschiebe } from "./anordnung.js";
 import Griff from "./Griff.jsx";
-import { alleMitarbeiter, baueMonat, baustellenFarbe, farbeVon, fmtStd, heuteStr, monatAlsCsv, monatsGrenzen, MONATSNAMEN } from "./logik.js";
+import { alleMitarbeiter, baueMonat, farbeVon, fmtStd, heuteStr, monatAlsCsv, monatsGrenzen, MONATSNAMEN } from "./logik.js";
 
 // Monatsabschluss – jeder Monat steht für sich:
 // Minusstunden werden mit Überstunden desselben Monats aufgefüllt, nichts wird übertragen.
@@ -157,7 +158,6 @@ export default function Monatsabschluss({ api, zuWoche }) {
   });
 
   const offen = monat ? monat.zeilen.filter((r) => r.tageMitWarnung || r.fehlendeTage || r.summenAbweichung).length : 0;
-  const maxBaustelle = monat?.baustellen[0]?.stunden || 1;
 
   return (
     <section className="b-seite">
@@ -261,23 +261,7 @@ export default function Monatsabschluss({ api, zuWoche }) {
           {monat.baustellen.length > 0 && (
             <div className="b-karte">
               <h2>Stunden pro Baustelle</h2>
-              <div className="b-balkenliste">
-                {monat.baustellen.map((b) => (
-                  <div key={b.name} className="b-balken">
-                    <div className="b-balken-kopf">
-                      <span className="b-balken-name">
-                        <span className="b-quadrat" style={{ background: baustellenFarbe(b.name) }} />
-                        {b.name}
-                      </span>
-                      <span className="b-zahl b-fett">{fmtStd(b.stunden)} h</span>
-                    </div>
-                    <div className="b-balken-spur">
-                      <div className="b-balken-fuell" style={{ width: `${Math.max((b.stunden / maxBaustelle) * 100, 2)}%`, background: baustellenFarbe(b.name) }} />
-                    </div>
-                    <div className="b-sek klein">{b.mitarbeiter.join(", ")}</div>
-                  </div>
-                ))}
-              </div>
+              <BaustellenBalken baustellen={monat.baustellen} />
             </div>
           )}
         </>

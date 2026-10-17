@@ -212,8 +212,11 @@ async function ladeDaten({ von, bis }) {
 
   // Gesperrte Mitarbeiter (gekündigt) – die Wochenübersicht blendet sie aus
   let gesperrt = [];
+  let azubis = [];
   try {
-    gesperrt = (await ladeZugaenge()).liste.filter((z) => z.status === "Gesperrt").map((z) => z.name);
+    const zugaenge = (await ladeZugaenge()).liste;
+    gesperrt = zugaenge.filter((z) => z.status === "Gesperrt").map((z) => z.name);
+    azubis = zugaenge.filter((z) => z.azubi).map((z) => z.name); // Helfer/Azubis für die Baustellen-Balken
   } catch {
     /* Zugänge sind optional für die Anzeige */
   }
@@ -221,6 +224,7 @@ async function ladeDaten({ von, bis }) {
   return {
     mitarbeiter,
     gesperrt,
+    azubis,
     arbeitstage: arbeitstage.map(arbeitstagAusSeite),
     projekte: projekte.map(projektAusSeite),
   };
